@@ -65,53 +65,6 @@ def get_viewer_cam_basis(viewer):
     return np.column_stack([forward, -right, up])
 
 
-def make_transform(rotation_mat, translation=None):
-    """Create a 4x4 transform from a rotation matrix and optional translation."""
-    T = np.eye(4)
-    T[:3, :3] = rotation_mat
-    if translation is not None:
-        T[:3, 3] = translation
-    return T
-
-
-EE_FRAME_CALIB_PRESETS = {
-    'identity': np.eye(4),
-    'rx90': make_transform(R.from_euler('x', 90, degrees=True).as_matrix()),
-    'rx-90': make_transform(R.from_euler('x', -90, degrees=True).as_matrix()),
-    'rx180': make_transform(R.from_euler('x', 180, degrees=True).as_matrix()),
-    'ry90': make_transform(R.from_euler('y', 90, degrees=True).as_matrix()),
-    'ry-90': make_transform(R.from_euler('y', -90, degrees=True).as_matrix()),
-    'ry180': make_transform(R.from_euler('y', 180, degrees=True).as_matrix()),
-    'rz90': make_transform(R.from_euler('z', 90, degrees=True).as_matrix()),
-    'rz-90': make_transform(R.from_euler('z', -90, degrees=True).as_matrix()),
-    'rz180': make_transform(R.from_euler('z', 180, degrees=True).as_matrix()),
-    'rx180_rz90': make_transform(R.from_euler('xz', [180, 90], degrees=True).as_matrix()),
-    'rx180_rz-90': make_transform(R.from_euler('xz', [180, -90], degrees=True).as_matrix()),
-    'ry180_rz90': make_transform(R.from_euler('yz', [180, 90], degrees=True).as_matrix()),
-    'ry180_rz-90': make_transform(R.from_euler('yz', [180, -90], degrees=True).as_matrix()),
-}
-
-
-def parse_ee_frame_calib(spec):
-    """Parse EE-frame calibration preset or `euler_deg:rx,ry,rz` string."""
-    if spec in EE_FRAME_CALIB_PRESETS:
-        return EE_FRAME_CALIB_PRESETS[spec].copy()
-
-    if spec.startswith('euler_deg:'):
-        angles = [float(v) for v in spec.split(':', 1)[1].split(',')]
-        if len(angles) != 3:
-            raise ValueError(
-                f'Invalid EE frame calib `{spec}`. Expected euler_deg:rx,ry,rz.'
-            )
-        return make_transform(R.from_euler('xyz', angles, degrees=True).as_matrix())
-
-    presets = ', '.join(sorted(EE_FRAME_CALIB_PRESETS))
-    raise ValueError(
-        f'Unknown EE frame calib `{spec}`. Use one of: {presets}, '
-        'or euler_deg:rx,ry,rz'
-    )
-
-
 # ─── MujocoEnv ───────────────────────────────────────────────────────────────
 
 class MujocoEnv:
@@ -121,15 +74,11 @@ class MujocoEnv:
     observation/action interfaces. Independent of any teleop or policy logic.
     """
 
-    def __init__(self, object_name, height=480, width=640, cam_names=None,
-                 ee_frame_calib='identity'):
+    def __init__(self, object_name, height=480, width=640, cam_names=None):
         self.object_name = object_name
         self.height = height
         self.width = width
         self.cam_names = cam_names or ['cam_left', 'cam_right', 'cam_front']
-        self.ee_frame_calib_spec = ee_frame_calib
-        self.T_ee_frame_calib = parse_ee_frame_calib(ee_frame_calib)
-        self.T_ee_frame_calib_inv = np.linalg.inv(self.T_ee_frame_calib)
 
         # Load model
         scene_xml = f'asset/{object_name}.xml'
@@ -159,13 +108,6 @@ class MujocoEnv:
         # Reset to initial state
         self.reset()
 
-    def _get_raw_ee_pose(self):
-        """Get the physical TCP site pose in world frame before calibration."""
-        T = np.eye(4)
-        T[:3, :3] = self.data.site_xmat[self.ee_site_id].reshape(3, 3)
-        T[:3, 3] = self.data.site_xpos[self.ee_site_id]
-        return T
-
     def reset(self):
         """Reset environment to the scene_home keyframe."""
         key_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_KEY, 'scene_home')
@@ -173,17 +115,18 @@ class MujocoEnv:
         mujoco.mj_forward(self.model, self.data)
 
         # Initialize IK target to current TCP pose
-        raw_ee_pose = self._get_raw_ee_pose()
-        self.target_pos = raw_ee_pose[:3, 3].copy()
-        self.target_quat = scipy_quat_to_mujoco(
-            R.from_matrix(raw_ee_pose[:3, :3]).as_quat()
-        )
+        self.target_pos = self.data.site_xpos[self.ee_site_id].copy()
+        ee_mat = self.data.site_xmat[self.ee_site_id].reshape(3, 3)
+        self.target_quat = scipy_quat_to_mujoco(R.from_matrix(ee_mat).as_quat())
 
     # ── Observation ──────────────────────────────────────────────────────
 
     def get_ee_pose(self):
-        """Get the calibrated gripper pose in world frame."""
-        return self._get_raw_ee_pose() @ self.T_ee_frame_calib
+        """Get the 4x4 SE3 pose of the gripper TCP in world frame."""
+        T = np.eye(4)
+        T[:3, :3] = self.data.site_xmat[self.ee_site_id].reshape(3, 3)
+        T[:3, 3] = self.data.site_xpos[self.ee_site_id]
+        return T
 
     def get_gripper_state(self):
         """Get gripper state: 1=open, 0=closed. Based on finger joint position."""
@@ -251,19 +194,12 @@ class MujocoEnv:
         """Set IK target and gripper command.
 
         Args:
-            target_pos: desired calibrated EE position (3,)
-            target_quat_xyzw: desired calibrated EE orientation as scipy quaternion [x,y,z,w]
+            target_pos: desired EE position (3,)
+            target_quat_xyzw: desired EE orientation as scipy quaternion [x,y,z,w]
             gripper_val: gripper command in [0, 255]
         """
-        T_w_e = make_transform(
-            R.from_quat(target_quat_xyzw).as_matrix(),
-            target_pos,
-        )
-        T_w_raw = T_w_e @ self.T_ee_frame_calib_inv
-        self.target_pos = T_w_raw[:3, 3].copy()
-        self.target_quat = scipy_quat_to_mujoco(
-            R.from_matrix(T_w_raw[:3, :3]).as_quat()
-        )
+        self.target_pos = target_pos.copy()
+        self.target_quat = scipy_quat_to_mujoco(target_quat_xyzw)
         self.data.ctrl[7] = np.clip(gripper_val, 0, 255)
 
     def step(self, n_substeps=1):
@@ -362,8 +298,7 @@ def collect_demo(args):
     os.makedirs(ee_dir, exist_ok=True)
 
     # Create environment
-    env = MujocoEnv(args.object, ee_frame_calib=args.ee_frame_calib)
-    print(f'Using EE frame calibration: {args.ee_frame_calib}')
+    env = MujocoEnv(args.object)
     env.save_camera_params(output_dir)
 
     # Start WebXR teleop policy
@@ -474,12 +409,5 @@ if __name__ == '__main__':
     parser.add_argument('--object', type=str, default='mug', help='Object name (loads asset/{object}.xml)')
     parser.add_argument('--fps', type=float, default=25.0, help='Recording frame rate')
     parser.add_argument('--max_frames', type=int, default=2000, help='Maximum number of frames to record')
-    parser.add_argument(
-        '--ee_frame_calib',
-        type=str,
-        default='identity',
-        help='EE frame calibration preset or euler_deg:rx,ry,rz '
-             f'(presets: {", ".join(sorted(EE_FRAME_CALIB_PRESETS))})',
-    )
     args = parser.parse_args()
     collect_demo(args)

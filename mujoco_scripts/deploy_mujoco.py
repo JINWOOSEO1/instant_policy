@@ -17,7 +17,7 @@ import argparse
 from instant_policy import sample_to_cond_demo, GraphDiffusion
 from utils import transform_pcd, subsample_pcd, transform_to_pose
 
-from mujoco_scripts.simulation import MujocoEnv, parse_ee_frame_calib
+from mujoco_scripts.simulation import MujocoEnv
 from mujoco_scripts.gen_seg_pcd import depth_to_pointcloud, camera_pcd_to_world
 from mujoco_scripts.gen_mask import interactive_mask_selection
 
@@ -223,18 +223,6 @@ if __name__ == '__main__':
                         help='Number of demos to load (demo_0.npy, demo_1.npy, ...)')
     parser.add_argument('--execution_horizon', type=int, default=8,
                         help='Number of predicted actions to execute per inference step')
-    parser.add_argument(
-        '--ee_frame_calib',
-        type=str,
-        default='identity',
-        help='EE frame calibration preset or euler_deg:rx,ry,rz',
-    )
-    parser.add_argument(
-        '--apply_demo_ee_calib',
-        action='store_true',
-        help='Apply the same EE-frame calibration to loaded demos. '
-             'Use this to sweep older demos collected without calibration.',
-    )
     args = parser.parse_args()
 
     ############################################################################
@@ -263,7 +251,6 @@ if __name__ == '__main__':
     # Load demonstration data
     data_dir = f'results/{args.object}'
     demos_processed = []
-    demo_calib = parse_ee_frame_calib(args.ee_frame_calib)
     for demo_idx in range(num_demos):
         demo_path = os.path.join(data_dir, f'demo_{demo_idx}.npy')
         demo = np.load(demo_path, allow_pickle=True).item()
@@ -273,9 +260,6 @@ if __name__ == '__main__':
         demo['pcds']   = demo['pcds'][:min_len]
         demo['T_w_es'] = demo['T_w_es'][:min_len]
         demo['grips']  = demo['grips'][:min_len]
-
-        if args.apply_demo_ee_calib:
-            demo['T_w_es'] = [T @ demo_calib for T in demo['T_w_es']]
 
         demos_processed.append(sample_to_cond_demo(demo, num_traj_wp))
         print(f'Loaded demo {demo_idx} ({min_len} frames) from {demo_path}')
@@ -288,10 +272,7 @@ if __name__ == '__main__':
 
     ############################################################################
     # Initialise MuJoCo environment
-    env = MujocoEnv(args.object, ee_frame_calib=args.ee_frame_calib)
-    print(f'Using EE frame calibration: {args.ee_frame_calib}')
-    if args.apply_demo_ee_calib:
-        print('Applying the same EE frame calibration to loaded demos.')
+    env = MujocoEnv(args.object)
     env.launch_viewer()
 
     # Cache static camera intrinsics / extrinsics (cameras don't move)

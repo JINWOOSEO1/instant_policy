@@ -21,8 +21,6 @@
 #   --sam2-ckpt PATH      SAM2 checkpoint (default: sam2_repo/checkpoints/sam2.1_hiera_small.pt)
 #   --voxel-size SIZE     Voxel size for downsampling (default: 0.005)
 #   --execution-horizon N Actions per inference step (default: 8)
-#   --ee-frame-calib SPEC EE frame calibration preset or euler_deg:rx,ry,rz
-#   --apply-demo-ee-calib Apply EE frame calibration to loaded demos at deploy time
 #   --skip-to STEP        Skip to step: collect, mask, pcd, deploy (default: collect)
 
 set -euo pipefail
@@ -44,8 +42,6 @@ SAM2_CONFIG="configs/sam2.1/sam2.1_hiera_s.yaml"
 SAM2_CKPT="sam2_repo/checkpoints/sam2.1_hiera_small.pt"
 VOXEL_SIZE=0.005
 EXECUTION_HORIZON=8
-EE_FRAME_CALIB="identity"
-APPLY_DEMO_EE_CALIB=0
 SKIP_TO="collect"
 POSITIONAL_OBJECT_SET=0
 
@@ -60,8 +56,6 @@ while [[ $# -gt 0 ]]; do
         --sam2-ckpt)         SAM2_CKPT="$2";          shift 2 ;;
         --voxel-size)        VOXEL_SIZE="$2";         shift 2 ;;
         --execution-horizon) EXECUTION_HORIZON="$2";  shift 2 ;;
-        --ee-frame-calib)    EE_FRAME_CALIB="$2";     shift 2 ;;
-        --apply-demo-ee-calib) APPLY_DEMO_EE_CALIB=1; shift ;;
         --skip-to)           SKIP_TO="$2";            shift 2 ;;
         -h|--help)
             sed -n '2,/^$/p' "${BASH_SOURCE[0]}" | sed 's/^# \?//'
@@ -105,8 +99,6 @@ echo "============================================================"
 echo "  Instant Policy MuJoCo Pipeline"
 echo "  Object: $OBJECT"
 echo "  Number of demos: $NUM_DEMOS"
-echo "  EE frame calib: $EE_FRAME_CALIB"
-echo "  Apply demo calib at deploy: $APPLY_DEMO_EE_CALIB"
 echo "  Starting from: $SKIP_TO"
 echo "============================================================"
 echo ""
@@ -139,8 +131,7 @@ for demo_idx in $(seq 0 $((NUM_DEMOS - 1))); do
         python mujoco_scripts/simulation.py \
             --object "$OBJECT" \
             --fps "$FPS" \
-            --max_frames "$MAX_FRAMES" \
-            --ee_frame_calib "$EE_FRAME_CALIB"
+            --max_frames "$MAX_FRAMES"
         echo ""
         echo "  Demo collection complete."
         echo ""
@@ -201,18 +192,12 @@ if run_step "deploy"; then
     echo "──────────────────────────────────────────────────────────"
     echo "  Step 4/4: Deploy Instant Policy"
     echo "──────────────────────────────────────────────────────────"
-    deploy_args=(
-        --object "$OBJECT"
-        --num_demos "$NUM_DEMOS"
-        --sam2_config "$SAM2_CONFIG"
-        --sam2_ckpt "$SAM2_CKPT"
-        --ee_frame_calib "$EE_FRAME_CALIB"
+    python mujoco_scripts/deploy_mujoco.py \
+        --object "$OBJECT" \
+        --num_demos "$NUM_DEMOS" \
+        --sam2_config "$SAM2_CONFIG" \
+        --sam2_ckpt "$SAM2_CKPT" \
         --execution_horizon "$EXECUTION_HORIZON"
-    )
-    if [[ $APPLY_DEMO_EE_CALIB -eq 1 ]]; then
-        deploy_args+=(--apply_demo_ee_calib)
-    fi
-    python mujoco_scripts/deploy_mujoco.py "${deploy_args[@]}"
     echo ""
     echo "  Deployment complete."
     echo ""
