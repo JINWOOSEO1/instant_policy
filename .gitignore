@@ -1,0 +1,18 @@
+# Claude
+.claude
+CLAUDE.md
+.codex
+
+# Checkpoints
+*.pt
+*.pth
+
+# franka
+asset/panda_assets/
+asset/panda.xml
+
+# sam2
+sam2_repo/
+
+archive/
+results/

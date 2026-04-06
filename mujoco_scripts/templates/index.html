@@ -1,0 +1,438 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  <title>WebXR Teleop Controller</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.2/socket.io.min.js"></script>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+      background: #1a1a2e; color: #eee;
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      height: 100vh; padding: calc(env(safe-area-inset-top, 0px) + 84px) 0 24px;
+      overflow: hidden; touch-action: none;
+    }
+    #status { font-size: 14px; color: #aaa; margin-bottom: 20px; text-align: center; }
+    #controls { display: flex; flex-direction: column; gap: 15px; align-items: center; width: 90%; max-width: 400px; }
+    .btn {
+      width: 100%; padding: 18px; border: none; border-radius: 12px;
+      font-size: 18px; font-weight: 600; cursor: pointer; transition: all 0.2s;
+      -webkit-user-select: none; user-select: none;
+    }
+    #startBtn { background: #0f3460; color: #e94560; }
+    #startBtn:active { background: #16213e; }
+    #startBtn.active { background: #e94560; color: #fff; }
+    .mode-btn { background: #16213e; color: #eee; }
+    .mode-btn.selected { background: #0f3460; color: #e94560; border: 2px solid #e94560; }
+    #gripperBtn {
+      position: fixed; top: calc(env(safe-area-inset-top, 0px) + 12px); left: 50%;
+      transform: translateX(-50%); width: min(90%, 400px); z-index: 20;
+      padding: 54px 18px; background: #16213e; color: #eee; touch-action: manipulation;
+    }
+    #gripperBtn.closed { background: #0f3460; color: #e94560; }
+    #gripperBtn:active { background: #e94560; color: #fff; }
+    .row { display: flex; gap: 10px; width: 100%; }
+    .row .btn { flex: 1; }
+    #stateControls { display: flex; gap: 10px; width: 100%; margin-top: 10px; }
+    #stateControls .btn { flex: 1; font-size: 14px; padding: 12px; background: #16213e; color: #aaa; }
+    #stateControls .btn:active { background: #e94560; color: #fff; }
+    #info { font-size: 12px; color: #666; margin-top: 15px; text-align: center; }
+    /* When in AR dom-overlay, make background transparent so camera shows through */
+    body.xr-active { background: transparent; }
+    body.xr-active #controls { background: rgba(26, 26, 46, 0.85); border-radius: 16px; padding: 15px; }
+    body.xr-active #status { background: rgba(26, 26, 46, 0.85); padding: 8px 16px; border-radius: 8px; }
+  </style>
+</head>
+<body>
+  <button id="gripperBtn" class="btn" onclick="toggleGripper(event)">Gripper: Open (Tap to Close)</button>
+
+  <div id="status">Connecting...</div>
+
+  <div id="controls">
+    <button id="startBtn" class="btn" onclick="toggleTracking(event)">Start Tracking</button>
+
+    <div class="row">
+      <button id="armBtn" class="btn mode-btn selected" ontouchstart="setMode('arm')" onclick="setMode('arm')">Arm Mode</button>
+      <button id="baseBtn" class="btn mode-btn" ontouchstart="setMode('base')" onclick="setMode('base')">Base Mode</button>
+    </div>
+
+    <div id="stateControls">
+      <button class="btn" ontouchstart="sendState('episode_ready')" onclick="sendState('episode_ready')">Start Episode</button>
+      <button class="btn" ontouchstart="sendState('episode_ended')" onclick="sendState('episode_ended')">End Episode</button>
+      <button class="btn" ontouchstart="sendState('reset_env')" onclick="sendState('reset_env')">Reset Env</button>
+    </div>
+  </div>
+
+  <div id="info">RTT: -- ms | Mode: --</div>
+
+  <script>
+    const socket = io();
+    let teleopMode = 'arm';
+    let gripperDelta = 0;
+    let gripperClosed = false;
+    let rttDisplay = document.getElementById('info');
+
+    // ── Tracking state ──
+    let trackingActive = false;
+    let trackingMode = null;  // 'xr' or 'device_orientation'
+
+    // Device orientation state
+    let deviceAlpha = 0, deviceBeta = 0, deviceGamma = 0;
+    let orientationAvailable = false;
+    let doSendInterval = null;
+
+    // WebXR state
+    let xrSession = null;
+    let refSpace = null;
+    let xrPending = false;
+
+    // ── Socket ──
+    socket.on('connect', () => {
+      document.getElementById('status').textContent = 'Connected to server';
+    });
+    socket.on('disconnect', () => {
+      document.getElementById('status').textContent = 'Disconnected';
+    });
+    socket.on('echo', (timestamp) => {
+      const rtt = Date.now() - timestamp;
+      rttDisplay.textContent = `RTT: ${rtt} ms | Mode: ${trackingMode || '--'}`;
+    });
+
+    // ── Teleop mode ──
+    function setMode(mode) {
+      teleopMode = mode;
+      document.getElementById('armBtn').classList.toggle('selected', mode === 'arm');
+      document.getElementById('baseBtn').classList.toggle('selected', mode === 'base');
+    }
+
+    // ── State control ──
+    function sendState(state) {
+      socket.emit('message', { state_update: state, timestamp: Date.now() });
+      document.getElementById('status').textContent = 'Sent: ' + state;
+    }
+
+    // ── Gripper click control ──
+    const gripperBtn = document.getElementById('gripperBtn');
+
+    function updateGripperButton() {
+      gripperBtn.classList.toggle('closed', gripperClosed);
+      gripperBtn.textContent = gripperClosed
+        ? 'Gripper: Closed (Tap to Open)'
+        : 'Gripper: Open (Tap to Close)';
+    }
+
+    function toggleGripper(e) {
+      e.preventDefault();
+      gripperClosed = !gripperClosed;
+      gripperDelta = gripperClosed ? -1 : 1;
+      updateGripperButton();
+      document.getElementById('status').textContent = `Gripper target: ${gripperClosed ? 'closed' : 'open'}`;
+    }
+
+    updateGripperButton();
+
+    // ══════════════════════════════════════════
+    //  Main toggle: try WebXR first, fallback to DeviceOrientation
+    // ══════════════════════════════════════════
+    async function toggleTracking(e) {
+      const btn = document.getElementById('startBtn');
+
+      if (trackingActive) {
+        stopTracking();
+        return;
+      }
+
+      // Try WebXR first
+      if (navigator.xr) {
+        socket.emit('message', { state_update: 'debug', debug_msg: 'Trying WebXR...', timestamp: Date.now() });
+        const xrStarted = await tryStartXR();
+        if (xrStarted) {
+          trackingMode = 'xr';
+          trackingActive = true;
+          btn.classList.add('active');
+          btn.textContent = 'Stop Tracking';
+          document.body.classList.add('xr-active');
+          document.getElementById('status').textContent = 'WebXR AR tracking active (dom-overlay)';
+          socket.emit('message', { state_update: 'debug', debug_msg: 'WebXR started OK', timestamp: Date.now() });
+          sendState('episode_started');
+          return;
+        }
+        socket.emit('message', { state_update: 'debug', debug_msg: 'WebXR failed', timestamp: Date.now() });
+      } else {
+        socket.emit('message', { state_update: 'debug', debug_msg: 'navigator.xr not available', timestamp: Date.now() });
+      }
+
+      // Fallback: Device Orientation
+      socket.emit('message', { state_update: 'debug', debug_msg: 'Trying DeviceOrientation...', timestamp: Date.now() });
+      const doStarted = await tryStartDeviceOrientation();
+      if (doStarted) {
+        trackingMode = 'device_orientation';
+        trackingActive = true;
+        btn.classList.add('active');
+        btn.textContent = 'Stop Tracking';
+        document.getElementById('status').textContent = 'Device orientation tracking active (move phone to control)';
+        socket.emit('message', { state_update: 'debug', debug_msg: 'DeviceOrientation started OK', timestamp: Date.now() });
+        sendState('episode_started');
+        return;
+      }
+
+      socket.emit('message', { state_update: 'debug', debug_msg: 'DeviceOrientation also failed. No tracking available.', timestamp: Date.now() });
+      document.getElementById('status').textContent = 'No tracking method available. Grant motion permissions and retry.';
+    }
+
+    function stopTracking() {
+      const btn = document.getElementById('startBtn');
+      if (trackingMode === 'xr' && xrSession) {
+        xrSession.end();
+      }
+      if (trackingMode === 'device_orientation') {
+        stopDeviceOrientation();
+      }
+      trackingActive = false;
+      trackingMode = null;
+      btn.classList.remove('active');
+      document.body.classList.remove('xr-active');
+      btn.textContent = 'Start Tracking';
+      document.getElementById('status').textContent = 'Tracking stopped';
+
+      // End the episode so the recording loop terminates
+      sendState('episode_ended');
+    }
+
+    // ══════════════════════════════════════════
+    //  WebXR
+    // ══════════════════════════════════════════
+    async function tryStartXR() {
+      if (xrPending) return false;
+      xrPending = true;
+
+      const statusEl = document.getElementById('status');
+
+      try {
+        // Check AR support
+        const arSupported = await navigator.xr.isSessionSupported('immersive-ar');
+        console.log('immersive-ar supported:', arSupported);
+        statusEl.textContent = `AR supported: ${arSupported}`;
+
+        if (arSupported) {
+          // Use dom-overlay so HTML UI stays visible on top of AR camera view
+          const sessionOpts = {
+            optionalFeatures: ['local-floor', 'dom-overlay'],
+            domOverlay: { root: document.body }
+          };
+          try {
+            xrSession = await navigator.xr.requestSession('immersive-ar', sessionOpts);
+          } catch (floorErr) {
+            console.log('AR with optional features failed, trying minimal:', floorErr);
+            xrSession = await navigator.xr.requestSession('immersive-ar', {
+              optionalFeatures: ['dom-overlay'],
+              domOverlay: { root: document.body }
+            });
+          }
+        } else {
+          const vrSupported = await navigator.xr.isSessionSupported('immersive-vr');
+          console.log('immersive-vr supported:', vrSupported);
+          if (vrSupported) {
+            xrSession = await navigator.xr.requestSession('immersive-vr', {
+              requiredFeatures: ['local-floor']
+            });
+          } else {
+            statusEl.textContent = 'WebXR: neither AR nor VR supported. Check: 1) Use Chrome 2) Install ARCore 3) HTTPS required';
+            xrPending = false;
+            return false;
+          }
+        }
+      } catch (err) {
+        console.log('XR session failed:', err);
+        statusEl.textContent = `XR failed: ${err.message}`;
+        xrPending = false;
+        return false;
+      }
+
+      xrPending = false;
+
+      // Create a WebGL context and bind it as the XR base layer.
+      // Without this, requestAnimationFrame callbacks are never fired.
+      // The GL context must also perform minimal rendering each frame
+      // for ARCore to process camera frames and establish tracking.
+      const canvas = document.createElement('canvas');
+      xrGl = canvas.getContext('webgl2', { xrCompatible: true })
+           || canvas.getContext('webgl', { xrCompatible: true });
+      if (!xrGl) {
+        statusEl.textContent = 'Failed to create WebGL context for XR';
+        xrSession.end();
+        return false;
+      }
+      const glLayer = new XRWebGLLayer(xrSession, xrGl);
+      await xrSession.updateRenderState({ baseLayer: glLayer });
+
+      // Try local-floor, fallback to local reference space
+      try {
+        refSpace = await xrSession.requestReferenceSpace('local-floor');
+      } catch (e) {
+        console.log('local-floor refspace failed, using local:', e);
+        refSpace = await xrSession.requestReferenceSpace('local');
+      }
+
+      xrSession.addEventListener('end', () => {
+        xrSession = null;
+        refSpace = null;
+        if (trackingMode === 'xr') {
+          stopTracking();
+        }
+      });
+
+      xrSession.requestAnimationFrame(onXRFrame);
+      return true;
+    }
+
+    let xrGl = null;  // WebGL context for XR rendering
+    let xrFrameCount = 0;
+    let xrNullPoseCount = 0;
+    let xrLastDiagTime = 0;
+
+    function onXRFrame(time, frame) {
+      if (!xrSession) return;
+      xrSession.requestAnimationFrame(onXRFrame);
+
+      xrFrameCount++;
+
+      // Minimal render: bind XR framebuffer and clear it.
+      // This is required for ARCore to process camera frames and establish tracking.
+      const glLayer = xrSession.renderState.baseLayer;
+      if (xrGl && glLayer) {
+        xrGl.bindFramebuffer(xrGl.FRAMEBUFFER, glLayer.framebuffer);
+        xrGl.clear(xrGl.COLOR_BUFFER_BIT | xrGl.DEPTH_BUFFER_BIT);
+      }
+
+      const pose = frame.getViewerPose(refSpace);
+      if (!pose) {
+        xrNullPoseCount++;
+        // Send diagnostic every 2 seconds
+        if (Date.now() - xrLastDiagTime > 2000) {
+          xrLastDiagTime = Date.now();
+          socket.emit('message', {
+            state_update: 'debug',
+            debug_msg: `XR frames=${xrFrameCount}, nullPose=${xrNullPoseCount}, pose=NULL (tracking not established)`,
+            timestamp: Date.now()
+          });
+          document.getElementById('status').textContent = `XR active but NO POSE (frames: ${xrFrameCount}, null: ${xrNullPoseCount})`;
+        }
+        return;
+      }
+
+      // Send diagnostic on first valid pose
+      if (xrNullPoseCount > 0 && xrFrameCount - xrNullPoseCount <= 1) {
+        socket.emit('message', {
+          state_update: 'debug',
+          debug_msg: `First valid pose after ${xrNullPoseCount} null frames`,
+          timestamp: Date.now()
+        });
+      }
+
+      const p = pose.transform.position;
+      const q = pose.transform.orientation;
+
+      const data = {
+        position: { x: p.x, y: p.y, z: p.z },
+        orientation: { x: q.x, y: q.y, z: q.z, w: q.w },
+        teleop_mode: teleopMode,
+        gripper_delta: gripperDelta,
+        timestamp: Date.now()
+      };
+
+      socket.emit('message', data);
+    }
+
+    // ══════════════════════════════════════════
+    //  Device Orientation fallback
+    // ══════════════════════════════════════════
+    async function tryStartDeviceOrientation() {
+      // iOS 13+ requires permission
+      if (typeof DeviceOrientationEvent !== 'undefined' &&
+          typeof DeviceOrientationEvent.requestPermission === 'function') {
+        try {
+          const perm = await DeviceOrientationEvent.requestPermission();
+          if (perm !== 'granted') {
+            console.log('DeviceOrientation permission denied');
+            return false;
+          }
+        } catch (err) {
+          console.log('DeviceOrientation permission error:', err);
+          return false;
+        }
+      }
+
+      if (typeof DeviceOrientationEvent === 'undefined') {
+        return false;
+      }
+
+      orientationAvailable = false;
+      window.addEventListener('deviceorientation', onDeviceOrientation);
+
+      // Wait briefly to see if events fire
+      await new Promise(r => setTimeout(r, 500));
+      if (!orientationAvailable) {
+        window.removeEventListener('deviceorientation', onDeviceOrientation);
+        return false;
+      }
+
+      // Send pose data at ~30 Hz
+      doSendInterval = setInterval(sendDeviceOrientationPose, 33);
+      return true;
+    }
+
+    function onDeviceOrientation(e) {
+      if (e.alpha !== null) {
+        orientationAvailable = true;
+        deviceAlpha = e.alpha;  // [0, 360) compass heading
+        deviceBeta = e.beta;    // [-180, 180) front/back tilt
+        deviceGamma = e.gamma;  // [-90, 90) left/right tilt
+      }
+    }
+
+    function stopDeviceOrientation() {
+      window.removeEventListener('deviceorientation', onDeviceOrientation);
+      if (doSendInterval) {
+        clearInterval(doSendInterval);
+        doSendInterval = null;
+      }
+    }
+
+    function sendDeviceOrientationPose() {
+      if (!orientationAvailable) return;
+
+      // Convert Euler angles to quaternion
+      // Device orientation: alpha=yaw, beta=pitch, gamma=roll
+      const alpha = deviceAlpha * Math.PI / 180;
+      const beta = deviceBeta * Math.PI / 180;
+      const gamma = deviceGamma * Math.PI / 180;
+
+      // ZXY Euler to quaternion (standard for device orientation)
+      const cx = Math.cos(beta / 2);
+      const sx = Math.sin(beta / 2);
+      const cy = Math.cos(gamma / 2);
+      const sy = Math.sin(gamma / 2);
+      const cz = Math.cos(alpha / 2);
+      const sz = Math.sin(alpha / 2);
+
+      const qw = cx * cy * cz - sx * sy * sz;
+      const qx = sx * cy * cz - cx * sy * sz;
+      const qy = cx * sy * cz + sx * cy * sz;
+      const qz = cx * cy * sz + sx * sy * cz;
+
+      const data = {
+        position: { x: 0, y: 0, z: 0 },
+        orientation: { x: qx, y: qy, z: qz, w: qw },
+        teleop_mode: teleopMode,
+        gripper_delta: gripperDelta,
+        timestamp: Date.now()
+      };
+
+      socket.emit('message', data);
+    }
+  </script>
+</body>
+</html>

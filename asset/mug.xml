@@ -1,0 +1,90 @@
+<mujoco model="panda_mug_scene">
+  <include file="panda.xml"/>
+
+  <option integrator="implicitfast" timestep="0.002"/>
+
+  <visual>
+    <headlight diffuse="0.6 0.6 0.6" ambient="0.3 0.3 0.3" specular="0 0 0"/>
+    <rgba haze="0.15 0.25 0.35 1"/>
+  </visual>
+
+  <asset>
+    <texture type="skybox" builtin="gradient" rgb1="0.3 0.5 0.7" rgb2="0 0 0" width="512" height="3072"/>
+    <texture type="2d" name="groundplane" builtin="checker" mark="edge"
+      rgb1="0.2 0.3 0.4" rgb2="0.1 0.2 0.3" markrgb="0.8 0.8 0.8" width="300" height="300"/>
+    <texture name="tex_wood" type="2d" builtin="flat" rgb1="0.4 0.25 0.15" rgb2="0.45 0.3 0.2" width="512" height="512"/>
+    <material name="groundplane" texture="groundplane" texuniform="true" texrepeat="5 5" reflectance="0.2"/>
+    <material name="table_mat" rgba="0.45 0.35 0.25 1" specular="0.2" shininess="0.1"/>
+    <material name="mug_mat" rgba="0.8 0.15 0.1 1" specular="0.5" shininess="0.3"/>
+    <material name="mat_wood" texture="tex_wood" specular="0.1" shininess="0.1"/>
+  </asset>
+
+  <worldbody>
+    <light pos="0 0 1.5" dir="0 0 -1" directional="true"/>
+    <geom name="floor" size="0 0 0.05" type="plane" material="groundplane"/>
+
+    <!-- Table -->
+    <body name="table" pos="0.45 0.25 0.1">
+      <geom name="table_top" type="box" size="0.4 0.5 0.02" pos="0 0 0.1" material="table_mat"/>
+      <geom name="table_leg1" type="cylinder" size="0.03 0.1" pos="0.35 0.45 0" material="table_mat"/>
+      <geom name="table_leg2" type="cylinder" size="0.03 0.1" pos="-0.35 0.45 0" material="table_mat"/>
+      <geom name="table_leg3" type="cylinder" size="0.03 0.1" pos="0.35 -0.45 0" material="table_mat"/>
+      <geom name="table_leg4" type="cylinder" size="0.03 0.1" pos="-0.35 -0.45 0" material="table_mat"/>
+    </body>
+
+    <!-- Mug at (0.5, 0, table_top) = (0.5, 0, 0.22) -->
+    <body name="mug" pos="0.5 0 0.22">
+      <freejoint name="mug_joint"/>
+      <inertial mass="0.6" pos="0 0 0.08" diaginertia="0.0024 0.0024 0.0016"/>
+      <!-- Mug bottom: disk (2x scaled) -->
+      <geom name="mug_bottom" type="cylinder" size="0.07 0.004" pos="0 0 0.004" material="mug_mat"/>
+      <!-- Mug wall: 12 boxes forming a hollow cylinder (radius=0.066, wall=0.008, half-height=0.08) -->
+      <geom name="mug_wall_00" type="box" size="0.004 0.018 0.08" pos="0.066 0 0.08" euler="0 0 0" material="mug_mat"/>
+      <geom name="mug_wall_01" type="box" size="0.004 0.018 0.08" pos="0.05716 0.033 0.08" euler="0 0 0.5236" material="mug_mat"/>
+      <geom name="mug_wall_02" type="box" size="0.004 0.018 0.08" pos="0.033 0.05716 0.08" euler="0 0 1.0472" material="mug_mat"/>
+      <geom name="mug_wall_03" type="box" size="0.004 0.018 0.08" pos="0 0.066 0.08" euler="0 0 1.5708" material="mug_mat"/>
+      <geom name="mug_wall_04" type="box" size="0.004 0.018 0.08" pos="-0.033 0.05716 0.08" euler="0 0 2.0944" material="mug_mat"/>
+      <geom name="mug_wall_05" type="box" size="0.004 0.018 0.08" pos="-0.05716 0.033 0.08" euler="0 0 2.6180" material="mug_mat"/>
+      <geom name="mug_wall_06" type="box" size="0.004 0.018 0.08" pos="-0.066 0 0.08" euler="0 0 3.1416" material="mug_mat"/>
+      <geom name="mug_wall_07" type="box" size="0.004 0.018 0.08" pos="-0.05716 -0.033 0.08" euler="0 0 3.6652" material="mug_mat"/>
+      <geom name="mug_wall_08" type="box" size="0.004 0.018 0.08" pos="-0.033 -0.05716 0.08" euler="0 0 4.1888" material="mug_mat"/>
+      <geom name="mug_wall_09" type="box" size="0.004 0.018 0.08" pos="0 -0.066 0.08" euler="0 0 4.7124" material="mug_mat"/>
+      <geom name="mug_wall_10" type="box" size="0.004 0.018 0.08" pos="0.033 -0.05716 0.08" euler="0 0 5.2360" material="mug_mat"/>
+      <geom name="mug_wall_11" type="box" size="0.004 0.018 0.08" pos="0.05716 -0.033 0.08" euler="0 0 5.7596" material="mug_mat"/>
+      <!-- Mug handle: arc of capsules on +y side (2x scaled) -->
+      <geom name="mug_handle_top" type="capsule" size="0.01" fromto="0 0.07 0.13 0 0.122 0.12" material="mug_mat"/>
+      <geom name="mug_handle_mid" type="capsule" size="0.01" fromto="0 0.122 0.12 0 0.130 0.08" material="mug_mat"/>
+      <geom name="mug_handle_bot" type="capsule" size="0.01" fromto="0 0.130 0.08 0 0.122 0.04" material="mug_mat"/>
+      <geom name="mug_handle_low" type="capsule" size="0.01" fromto="0 0.122 0.04 0 0.07 0.03" material="mug_mat"/>
+    </body>
+
+    <!-- Mug rack at (0.5, 0.5, table_top) = (0.5, 0.5, 0.22) -->
+    <body name="mug_rack" pos="0.5 0.5 0.22" euler="0 0 1.571">
+      <geom name="rack_base" type="cylinder" size="0.11 0.014" pos="0 0 0.014" material="mat_wood"/>
+      <geom name="rack_post" type="cylinder" size="0.02 0.20" pos="0 0 0.216" material="mat_wood"/>
+      <geom name="rack_branch_top_1" type="capsule" size="0.008 0.054" pos="0.027 0 0.338" euler="0 70 0" material="mat_wood"/>
+      <geom name="rack_branch_top_2" type="capsule" size="0.008 0.054" pos="-0.027 0 0.338" euler="0 -70 0" material="mat_wood"/>
+      <geom name="rack_branch_mid_1" type="capsule" size="0.008 0.054" pos="0 0.027 0.203" euler="-70 0 0" material="mat_wood"/>
+      <geom name="rack_branch_mid_2" type="capsule" size="0.008 0.054" pos="0 -0.027 0.203" euler="70 0 0" material="mat_wood"/>
+    </body>
+
+    <!-- Camera target site -->
+    <site name="cam_target" pos="0.25 0.25 0.22" size="0.001" rgba="0 0 0 0"/>
+
+    <!-- Left camera (negative Y side when looking along +x) -->
+    <camera name="cam_left" pos="0.15 -1.2304 1.1" xyaxes="0.9977 -0.0674 0 0.0344 0.5089 0.8601" fovy="45"/>
+
+    <!-- Right camera (positive Y side) -->
+    <camera name="cam_right" pos="0.15 1.7304 1.1" xyaxes="-0.9977 -0.0674 0 0.0344 -0.5089 0.8601" fovy="45"/>
+
+    <!-- Front camera (positive X side, looking back at target) -->
+    <camera name="cam_front" pos="1.5426 0.25 1.1" xyaxes="0 1 0 -0.5627 0 0.8266" fovy="45"/>
+
+  </worldbody>
+
+  <keyframe>
+    <key name="scene_home"
+         qpos="0 0 0 -1.57079 0 1.57079 -0.7853 0.04 0.04 0.5 0 0.22 1 0 0 0"
+         ctrl="0 0 0 -1.57079 0 1.57079 -0.7853 255"/>
+  </keyframe>
+</mujoco>

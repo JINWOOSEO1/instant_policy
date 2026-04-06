@@ -1,0 +1,60 @@
+<mujoco model="panda_box_scene">
+  <include file="panda.xml"/>
+
+  <option integrator="implicitfast" timestep="0.002"/>
+
+  <visual>
+    <headlight diffuse="0.6 0.6 0.6" ambient="0.3 0.3 0.3" specular="0 0 0"/>
+    <rgba haze="0.15 0.25 0.35 1"/>
+  </visual>
+
+  <asset>
+    <texture type="skybox" builtin="gradient" rgb1="0.3 0.5 0.7" rgb2="0 0 0" width="512" height="3072"/>
+    <texture type="2d" name="groundplane" builtin="checker" mark="edge"
+      rgb1="0.2 0.3 0.4" rgb2="0.1 0.2 0.3" markrgb="0.8 0.8 0.8" width="300" height="300"/>
+    <texture name="tex_wood" type="2d" builtin="flat" rgb1="0.4 0.25 0.15" rgb2="0.45 0.3 0.2" width="512" height="512"/>
+    <material name="groundplane" texture="groundplane" texuniform="true" texrepeat="5 5" reflectance="0.2"/>
+    <material name="table_mat" rgba="0.45 0.35 0.25 1" specular="0.2" shininess="0.1"/>
+    <material name="small_box_mat" rgba="0.8 0.15 0.1 1" specular="0.4" shininess="0.2"/>
+    <material name="target_box_mat" texture="tex_wood" specular="0.1" shininess="0.1"/>
+  </asset>
+
+  <worldbody>
+    <light pos="0 0 1.5" dir="0 0 -1" directional="true"/>
+    <geom name="floor" size="0 0 0.05" type="plane" material="groundplane"/>
+
+    <body name="table" pos="0.45 0.25 0.1">
+      <geom name="table_top" type="box" size="0.4 0.5 0.02" pos="0 0 0.1" material="table_mat"/>
+      <geom name="table_leg1" type="cylinder" size="0.03 0.1" pos="0.35 0.45 0" material="table_mat"/>
+      <geom name="table_leg2" type="cylinder" size="0.03 0.1" pos="-0.35 0.45 0" material="table_mat"/>
+      <geom name="table_leg3" type="cylinder" size="0.03 0.1" pos="0.35 -0.45 0" material="table_mat"/>
+      <geom name="table_leg4" type="cylinder" size="0.03 0.1" pos="-0.35 -0.45 0" material="table_mat"/>
+    </body>
+
+    <body name="small_box" pos="0.5 0 0.22">
+      <freejoint name="small_box_joint"/>
+      <inertial mass="0.2" pos="0 0 0.03" diaginertia="0.00012 0.00012 0.00012"/>
+      <geom name="small_box_geom" type="box" size="0.02 0.05 0.05" pos="0 0 0.05" material="small_box_mat"/>
+    </body>
+
+    <body name="target_box" pos="0.5 0.3 0.22" euler="0 0 1.571">
+      <geom name="target_box_bottom" type="box" size="0.085 0.085 0.005" pos="0 0 0.005" material="target_box_mat"/>
+      <geom name="target_box_wall_pos_x" type="box" size="0.005 0.085 0.035" pos="0.08 0 0.04" material="target_box_mat"/>
+      <geom name="target_box_wall_neg_x" type="box" size="0.005 0.085 0.035" pos="-0.08 0 0.04" material="target_box_mat"/>
+      <geom name="target_box_wall_pos_y" type="box" size="0.075 0.005 0.035" pos="0 0.08 0.04" material="target_box_mat"/>
+      <geom name="target_box_wall_neg_y" type="box" size="0.075 0.005 0.035" pos="0 -0.08 0.04" material="target_box_mat"/>
+    </body>
+
+    <site name="cam_target" pos="0.25 0.25 0.22" size="0.001" rgba="0 0 0 0"/>
+
+    <camera name="cam_left" pos="0.15 -1.2304 1.1" xyaxes="0.9977 -0.0674 0 0.0344 0.5089 0.8601" fovy="45"/>
+    <camera name="cam_right" pos="0.15 1.7304 1.1" xyaxes="-0.9977 -0.0674 0 0.0344 -0.5089 0.8601" fovy="45"/>
+    <camera name="cam_front" pos="1.5426 0.25 1.1" xyaxes="0 1 0 -0.5627 0 0.8266" fovy="45"/>
+  </worldbody>
+
+  <keyframe>
+    <key name="scene_home"
+         qpos="0 0 0 -1.57079 0 1.57079 -0.7853 0.04 0.04 0.5 0 0.22 1 0 0 0"
+         ctrl="0 0 0 -1.57079 0 1.57079 -0.7853 255"/>
+  </keyframe>
+</mujoco>
