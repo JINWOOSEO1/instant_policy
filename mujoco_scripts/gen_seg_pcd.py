@@ -65,6 +65,12 @@ def main():
         return
     cam_params = np.load(cam_params_path)
 
+    # Load EE poses for world-to-EE-frame transformation
+    ee_pose_dir = os.path.join(data_dir, 'EE_pose')
+    if not os.path.exists(ee_pose_dir):
+        print(f'EE pose directory not found: {ee_pose_dir}')
+        return
+
     # Determine number of frames from depth files
     depth_files = sorted(glob.glob(os.path.join(rgbd_dir, 'cam0', '*_depth.npy')))
     num_frames = len(depth_files)
@@ -120,7 +126,16 @@ def main():
             if args.voxel_size > 0 and len(pcd_merged) > 0:
                 pcd_merged = downsample_pcd(pcd_merged, voxel_size=args.voxel_size)
 
-        # Save per-frame pointcloud
+        # Transform from world frame to EE (gripper_tcp) frame
+        ee_pose_path = os.path.join(ee_pose_dir, f'{frame_idx:04d}.npy')
+        if not os.path.exists(ee_pose_path):
+            print(f'  Frame {frame_idx}: EE pose not found, skipping')
+            continue
+        T_w_e = np.load(ee_pose_path)  # (4, 4) world-to-EE pose
+        if len(pcd_merged) > 0:
+            pcd_merged = transform_pcd(pcd_merged, np.linalg.inv(T_w_e))
+
+        # Save per-frame pointcloud (in EE frame)
         np.save(os.path.join(pcd_dir, f'{frame_idx:04d}.npy'), pcd_merged.astype(np.float32))
 
         if frame_idx % 50 == 0:

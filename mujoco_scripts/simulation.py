@@ -102,6 +102,11 @@ class MujocoEnv:
         self.target_pos = None
         self.target_quat = None
 
+        # Gripper smoothing: interpolate over gripper_duration seconds
+        self.gripper_duration = 0.3  # seconds to fully open/close
+        self.gripper_current = 0.0   # current gripper ctrl value
+        self.gripper_target = 0.0    # desired gripper ctrl value
+
         # Viewer reference (set externally when using passive viewer)
         self.viewer = None
 
@@ -200,13 +205,16 @@ class MujocoEnv:
         """
         self.target_pos = target_pos.copy()
         self.target_quat = scipy_quat_to_mujoco(target_quat_xyzw)
-        self.data.ctrl[7] = np.clip(gripper_val, 0, 255)
+        self.gripper_target = np.clip(gripper_val, 0, 255)
 
     def step(self, n_substeps=1):
         """Run IK + physics simulation for n_substeps.
 
         Uses the current target_pos and target_quat to compute joint targets.
         """
+        # Max gripper change per substep based on duration
+        max_gripper_step = 255.0 * self.model.opt.timestep / self.gripper_duration
+
         for _ in range(n_substeps):
             mujoco.mj_forward(self.model, self.data)
             dq = self._ik_step(self.target_pos, self.target_quat)
@@ -216,11 +224,20 @@ class MujocoEnv:
                 self.joint_range_high,
             )
             self.data.ctrl[:7] = q_target
+
+            # Smoothly interpolate gripper toward target
+            diff = self.gripper_target - self.gripper_current
+            if abs(diff) > max_gripper_step:
+                self.gripper_current += np.sign(diff) * max_gripper_step
+            else:
+                self.gripper_current = self.gripper_target
+            self.data.ctrl[7] = self.gripper_current
+
             mujoco.mj_step(self.model, self.data)
 
     def _ik_step(self, target_pos, target_quat_mj, step_size=0.5, damping=1e-4):
         """Damped least-squares IK: compute joint angle delta for one step."""
-        current_pos = self.data.site_xpos[self.ee_site_id]
+        current_pos = self.data.site_xpos[self.ee_site_id].copy()
         current_mat = self.data.site_xmat[self.ee_site_id].reshape(3, 3)
 
         # Position error

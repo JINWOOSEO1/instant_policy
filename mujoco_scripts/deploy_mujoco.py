@@ -299,6 +299,11 @@ if __name__ == '__main__':
 
     ############################################################################
     # Rollout loop
+    # Create folder for saving deployed EE poses
+    ee_pose_deploy_dir = os.path.join(data_dir, 'EE_pose(deploy)')
+    os.makedirs(ee_pose_deploy_dir, exist_ok=True)
+    ee_pose_counter = 0
+
     points_per_cam  = {}
     labels_per_cam  = {}
     initialized_cam = {c: False for c in cam_names}
@@ -370,10 +375,13 @@ if __name__ == '__main__':
 
         pcd_w = np.concatenate(pcd_list, axis=0)
 
+        # Transform from world frame to EE (gripper_tcp) frame
+        pcd_ee = transform_pcd(pcd_w, np.linalg.inv(T_w_e))
+
         # ── Model inference ──────────────────────────────────────────────────
         t0 = time.time()
         full_sample['live'] = {
-            'obs':    [transform_pcd(subsample_pcd(pcd_w), np.linalg.inv(T_w_e))],
+            'obs':    [subsample_pcd(pcd_ee)],
             'grips':  [grip],
             'T_w_es': [T_w_e],
         }
@@ -391,6 +399,10 @@ if __name__ == '__main__':
             T_w_e_next  = T_w_e @ actions[j]
             pose_7d     = transform_to_pose(T_w_e_next)  # [x,y,z, qx,qy,qz,qw]
             grip_binary = int((pred_grips[j] + 1) / 2 > 0.5)
+
+            # Save T_w_e_next to EE_pose(deploy) folder
+            np.save(os.path.join(ee_pose_deploy_dir, f'{ee_pose_counter:04d}.npy'), T_w_e_next)
+            ee_pose_counter += 1
 
             env.set_target(pose_7d[:3], pose_7d[3:], grip_binary * 255)
             env.step(n_substeps=sim_steps_per_action)
