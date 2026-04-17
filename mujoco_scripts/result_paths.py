@@ -3,12 +3,6 @@
 import os
 
 
-def uses_structured_result_layout(object_name):
-    """Return True because all objects now use demo/live subdirectories."""
-    del object_name
-    return True
-
-
 def get_object_root(object_name):
     return os.path.join('results', object_name)
 
@@ -53,12 +47,6 @@ def get_demo_gripper_state_path(object_name, demo_index=None):
     if demo_index is None:
         return os.path.join(get_demo_root(object_name), 'gripper_state.npy')
     return os.path.join(get_demo_dir(object_name, demo_index), 'gripper_state.npy')
-
-
-def get_demo_gripper_command_path(object_name, demo_index=None):
-    if demo_index is None:
-        return os.path.join(get_demo_root(object_name), 'gripper_command.npy')
-    return os.path.join(get_demo_dir(object_name, demo_index), 'gripper_command.npy')
 
 
 def get_demo_file_path(object_name, demo_index):
@@ -112,15 +100,6 @@ def resolve_demo_gripper_state_path(object_name, demo_index):
         os.path.join(get_demo_root(object_name), 'gripper_state', f'demo_{demo_index}.npy'),
         get_demo_gripper_state_path(object_name),
         os.path.join(get_object_root(object_name), 'gripper_state.npy'),
-    ], os.path.exists)
-
-
-def resolve_demo_gripper_command_path(object_name, demo_index):
-    return _first_existing_path([
-        get_demo_gripper_command_path(object_name, demo_index),
-        os.path.join(get_demo_root(object_name), 'gripper_command', f'demo_{demo_index}.npy'),
-        get_demo_gripper_command_path(object_name),
-        os.path.join(get_object_root(object_name), 'gripper_command.npy'),
     ], os.path.exists)
 
 

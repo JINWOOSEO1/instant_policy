@@ -1,11 +1,10 @@
 #!/bin/bash
 #
 # Full MuJoCo Instant Policy pipeline:
-#   1. Collect demo via WebXR teleoperation
-#   2. Generate segmentation masks (SAM2)
-#   3. Generate segmented pointclouds
-#   (Steps 1-3 repeat for each demo)
-#   4. Deploy Instant Policy (using all collected demos)
+#   1. Collect demo + generate masks (demo_generation.py)
+#   2. Generate segmented pointclouds
+#   (Steps 1-2 repeat for each demo)
+#   3. Deploy Instant Policy (loading demos directly from results/)
 #
 # Usage:
 #   bash mujoco_scripts/run_pipeline.sh [OBJECT] [--num-demos 1] [--skip-to STEP]
@@ -15,13 +14,15 @@
 #   OBJECT                Object name (default: mug), loads asset/{NAME}.xml
 #   --object NAME         Object name override (same as positional OBJECT)
 #   --num-demos N         Number of demos to collect (default: 1)
-#   --fps FPS             Recording frame rate (default: 10)
-#   --max-frames N        Max frames to record (default: 1000)
+#   --fps FPS             Recording frame rate (default: 25)
+#   --max-frames N        Max frames to record (default: 2000)
+#   --teleop              Use teleoperation for demo collection (default: rule-based)
+#   --sam2                Use SAM2 for mask generation instead of MuJoCo GT seg_renderer
 #   --sam2-config PATH    SAM2 config (default: configs/sam2.1/sam2.1_hiera_s.yaml)
 #   --sam2-ckpt PATH      SAM2 checkpoint (default: sam2_repo/checkpoints/sam2.1_hiera_small.pt)
 #   --voxel-size SIZE     Voxel size for downsampling (default: 0.005)
 #   --execution-horizon N Actions per inference step (default: 8)
-#   --skip-to STEP        Skip to step: collect, mask, pcd, deploy (default: collect)
+#   --skip-to STEP        Skip to step: collect, pcd, deploy (default: collect)
 
 set -euo pipefail
 
@@ -38,6 +39,8 @@ OBJECT="mug"
 NUM_DEMOS=1
 FPS=25
 MAX_FRAMES=2000
+USE_TELEOP=0
+USE_SAM2=0
 SAM2_CONFIG="configs/sam2.1/sam2.1_hiera_s.yaml"
 SAM2_CKPT="sam2_repo/checkpoints/sam2.1_hiera_small.pt"
 VOXEL_SIZE=0.005
@@ -52,6 +55,8 @@ while [[ $# -gt 0 ]]; do
         --num-demos)         NUM_DEMOS="$2";          shift 2 ;;
         --fps)               FPS="$2";                shift 2 ;;
         --max-frames)        MAX_FRAMES="$2";         shift 2 ;;
+        --teleop)            USE_TELEOP=1;            shift ;;
+        --sam2)              USE_SAM2=1;              shift ;;
         --sam2-config)       SAM2_CONFIG="$2";        shift 2 ;;
         --sam2-ckpt)         SAM2_CKPT="$2";          shift 2 ;;
         --voxel-size)        VOXEL_SIZE="$2";         shift 2 ;;
@@ -75,7 +80,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 # ─── Step ordering ───────────────────────────────────────────────────────────
-STEPS=(collect mask pcd deploy)
+STEPS=(collect pcd deploy)
 
 start_idx=0
 for i in "${!STEPS[@]}"; do
@@ -99,6 +104,8 @@ echo "============================================================"
 echo "  Instant Policy MuJoCo Pipeline"
 echo "  Object: $OBJECT"
 echo "  Number of demos: $NUM_DEMOS"
+echo "  Demo mode: $([ $USE_TELEOP -eq 1 ] && echo 'Teleop' || echo 'Rule-based')"
+echo "  Mask mode: $([ $USE_SAM2 -eq 1 ] && echo 'SAM2' || echo 'GT (object-mapped geoms)')"
 echo "  Starting from: $SKIP_TO"
 echo "============================================================"
 echo ""
@@ -110,8 +117,22 @@ LIVE_DIR="${RESULT_DIR}/live"
 LIVE_POSE_DIR="${LIVE_DIR}/T_w_e"
 COLLECT_ARGS=(--object "$OBJECT" --fps "$FPS" --max_frames "$MAX_FRAMES")
 
-if [[ "$OBJECT" == "box" || "$OBJECT" == "box_2" ]]; then
-    COLLECT_ARGS+=(--rule)
+if [[ $USE_TELEOP -eq 1 ]]; then
+    COLLECT_ARGS+=(--teleop)
+fi
+
+if [[ $USE_SAM2 -eq 1 ]]; then
+    COLLECT_ARGS+=(--sam2 --sam2_config "$SAM2_CONFIG" --sam2_ckpt "$SAM2_CKPT")
+fi
+
+DEPLOY_ARGS=(
+    --object "$OBJECT"
+    --num_demos "$NUM_DEMOS"
+    --execution_horizon "$EXECUTION_HORIZON"
+)
+
+if [[ $USE_SAM2 -eq 1 ]]; then
+    DEPLOY_ARGS+=(--sam2 --sam2_config "$SAM2_CONFIG" --sam2_ckpt "$SAM2_CKPT")
 fi
 
 # ─── Clean previous results (including old demo files) ────────────────────────
@@ -139,36 +160,21 @@ for demo_idx in $(seq 0 $((NUM_DEMOS - 1))); do
     echo "************************************************************"
     echo ""
 
-    # ─── Step 1: Collect demo ────────────────────────────────────────────
+    # ─── Step 1: Collect demo + generate masks ──────────────────────────
     if run_step "collect"; then
         echo "──────────────────────────────────────────────────────────"
-        echo "  Step 1/4: Collect demo (WebXR teleoperation)"
+        echo "  Step 1/3: Collect demo + generate masks"
         echo "──────────────────────────────────────────────────────────"
-        python mujoco_scripts/simulation.py "${COLLECT_ARGS[@]}" --demo_index "$demo_idx"
+        python mujoco_scripts/demo_generation.py "${COLLECT_ARGS[@]}" --demo_index "$demo_idx"
         echo ""
         echo "  Demo collection complete."
         echo ""
     fi
 
-    # ─── Step 2: Generate masks ──────────────────────────────────────────
-    if run_step "mask"; then
-        echo "──────────────────────────────────────────────────────────"
-        echo "  Step 2/4: Generate segmentation masks (SAM2)"
-        echo "──────────────────────────────────────────────────────────"
-        python mujoco_scripts/gen_mask.py \
-            --object "$OBJECT" \
-            --demo_index "$demo_idx" \
-            --sam2_config "$SAM2_CONFIG" \
-            --sam2_ckpt "$SAM2_CKPT"
-        echo ""
-        echo "  Mask generation complete."
-        echo ""
-    fi
-
-    # ─── Step 3: Generate segmented pointclouds ──────────────────────────
+    # ─── Step 2: Generate segmented pointclouds ──────────────────────────
     if run_step "pcd"; then
         echo "──────────────────────────────────────────────────────────"
-        echo "  Step 3/4: Generate segmented pointclouds"
+        echo "  Step 2/3: Generate segmented pointclouds"
         echo "──────────────────────────────────────────────────────────"
         python mujoco_scripts/gen_seg_pcd.py \
             --object "$OBJECT" \
@@ -179,26 +185,14 @@ for demo_idx in $(seq 0 $((NUM_DEMOS - 1))); do
         echo ""
     fi
 
-    # ─── Save consolidated demo file ─────────────────────────────────────
-    echo "──────────────────────────────────────────────────────────"
-    echo "  Saving demo ${demo_idx} ..."
-    echo "──────────────────────────────────────────────────────────"
-    python mujoco_scripts/save_demo.py \
-        --object "$OBJECT" \
-        --demo_index "$demo_idx"
-    echo ""
-
 done
 
-# ─── Step 4: Deploy ─────────────────────────────────────────────────────────
+# ─── Step 3: Deploy ─────────────────────────────────────────────────────────
 if run_step "deploy"; then
     echo "──────────────────────────────────────────────────────────"
-    echo "  Step 4/4: Deploy Instant Policy"
+    echo "  Step 3/3: Deploy Instant Policy"
     echo "──────────────────────────────────────────────────────────"
-    python mujoco_scripts/deploy_mujoco_gt.py \
-        --object "$OBJECT" \
-        --num_demos "$NUM_DEMOS" \
-        --execution_horizon "$EXECUTION_HORIZON"
+    python mujoco_scripts/deploy_mujoco.py "${DEPLOY_ARGS[@]}"
     echo ""
     echo "  Deployment complete."
     echo ""

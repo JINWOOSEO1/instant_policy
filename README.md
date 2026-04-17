@@ -61,6 +61,62 @@ For more please see `deploy.py`.
 
 Note that in our experiments, we found that two depth cameras placed around the scene worked well.
 
+## MuJoCo Pipeline
+
+The MuJoCo workflow is centered around `mujoco_scripts/run_pipeline.sh`.
+
+Example:
+
+```bash
+bash mujoco_scripts/run_pipeline.sh --num-demos 1 --object box --sam2
+```
+
+Useful options:
+
+- `--sam2`: use SAM2 for mask generation and deployment-time segmentation. If omitted, MuJoCo ground-truth masks are used.
+- `--teleop`: collect demos with phone WebXR teleoperation. If omitted, the default is rule-based demo collection.
+- `--num-demos`: number of demos to collect and use for deployment.
+- `--object`: object / scene type to run.
+
+The pipeline runs in this order:
+
+```text
+demo_generation.py -> gen_seg_pcd.py -> deploy_mujoco.py
+```
+
+### Results Layout
+
+Outputs are organized under `results/`, with a separate folder for each object:
+
+```text
+results/
+└── {object}/
+    ├── demo/
+    │   └── demo_{i}/
+    │       ├── RGBD_images/
+    │       ├── mask/
+    │       ├── seg_pcd/
+    │       ├── T_w_e/
+    │       └── gripper_state.npy
+    └── live/
+        ├── step_000.npy
+        ├── step_001.npy
+        ├── ...
+        ├── T_w_e/
+        └── gripper_state.npy
+```
+
+`live/step_*.npy` stores the current observation used for predicting the next 8 actions, together with the prediction outputs. In particular, each step file contains the current `T_w_e`, gripper state, segmented pointcloud, and the predicted actions / gripper commands.
+
+### Frame Convention Warning
+
+Be careful with pointcloud frames:
+
+- Demo pointclouds saved in `results/{object}/demo/.../seg_pcd/` are in the world frame.
+- Deployment-time inference uses pointclouds transformed into the end-effector frame.
+
+This distinction is important when debugging demos, live observations, or saved `step_*.npy` files.
+
 ## Notes on Observed Performance
 
 To reach the best performance when deploying the current implementation of Instant Policy, there is a number of things to consider:
@@ -84,4 +140,3 @@ If you find our paper interesting or useful in your work, please cite our paper:
   year={2025}
 }
 ```
-

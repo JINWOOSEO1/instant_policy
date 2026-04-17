@@ -12,47 +12,19 @@ import os
 import glob
 
 import numpy as np
-from mujoco_scripts.camera_utils import load_camera_entries
+from mujoco_scripts.camera_utils import (
+    camera_pcd_to_world,
+    depth_to_pointcloud,
+    load_camera_entries,
+)
 from mujoco_scripts.result_paths import (
     get_camera_params_path,
     get_demo_seg_pcd_dir,
     get_object_root,
     resolve_demo_mask_dir,
-    resolve_demo_pose_dir,
     resolve_demo_rgbd_dir,
 )
-from utils import transform_pcd, downsample_pcd
-
-
-def depth_to_pointcloud(depth, fx, fy, cx, cy):
-    """Deproject depth image to camera-frame pointcloud."""
-    H, W = depth.shape
-    u, v = np.meshgrid(np.arange(W), np.arange(H))
-    z = depth
-    x = (u - cx) * z / fx
-    y = (v - cy) * z / fy
-    points = np.stack([x, y, z], axis=-1).reshape(-1, 3)
-
-    # Filter invalid points
-    valid = (points[:, 2] > 0) & (points[:, 2] < 2.0)
-    return points[valid]
-
-
-def camera_pcd_to_world(pcd_cam, cam_extrinsic):
-    """Transform pointcloud from camera frame to world frame.
-
-    MuJoCo camera convention: OpenGL style where -Z points into the scene.
-    Depth deprojection gives +Z into the scene.
-    Apply flip to convert from deprojection convention to MuJoCo camera frame.
-    """
-    # Flip Y and Z to go from OpenCV-like deprojection to OpenGL camera frame
-    flip = np.diag([1.0, -1.0, -1.0])
-    pcd_gl = (flip @ pcd_cam.T).T
-
-    # cam_extrinsic is the camera's world pose: T_world_cam
-    # cam_extrinsic[:3, :3] = rotation, cam_extrinsic[:3, 3] = position
-    pcd_world = transform_pcd(pcd_gl, cam_extrinsic)
-    return pcd_world
+from utils import downsample_pcd
 
 
 def main():
@@ -77,13 +49,6 @@ def main():
     camera_entries = load_camera_entries(object_root, rgbd_dir=rgbd_dir)
     if not camera_entries:
         print(f'No camera metadata found in {object_root}')
-        cam_params.close()
-        return
-
-    # Load EE poses for world-to-EE-frame transformation
-    pose_dir = resolve_demo_pose_dir(args.object, args.demo_index)
-    if not os.path.exists(pose_dir):
-        print(f'EE pose directory not found: {pose_dir}')
         cam_params.close()
         return
 
@@ -149,17 +114,7 @@ def main():
             if args.voxel_size > 0 and len(pcd_merged) > 0:
                 pcd_merged = downsample_pcd(pcd_merged, voxel_size=args.voxel_size)
 
-        # Transform from world frame to EE (gripper_tcp) frame
-        ee_pose_path = os.path.join(pose_dir, f'{frame_idx:04d}.npy')
-        if not os.path.exists(ee_pose_path):
-            print(f'  Frame {frame_idx}: EE pose not found, skipping')
-            continue
-        T_w_e = np.load(ee_pose_path)  # (4, 4) world-to-EE pose
-        if len(pcd_merged) > 0:
-            # pcd_merged = transform_pcd(pcd_merged, np.linalg.inv(T_w_e))
-            pcd_merged = pcd_merged
-
-        # Save per-frame pointcloud (in EE frame)
+        # Save per-frame pointcloud (in world frame)
         np.save(os.path.join(pcd_dir, f'{frame_idx:04d}.npy'), pcd_merged.astype(np.float32))
 
         if frame_idx % 50 == 0:

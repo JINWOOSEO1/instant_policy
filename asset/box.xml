@@ -38,6 +38,9 @@
     </body>
 
     <body name="target_box" pos="0.5 0.3 0.22" euler="0 0 1.571">
+      <joint name="target_box_slide_x" type="slide" axis="1 0 0" damping="1"/>
+      <joint name="target_box_slide_y" type="slide" axis="0 1 0" damping="1"/>
+      <inertial mass="4.0" pos="0 0 0.03" diaginertia="0.002 0.002 0.002"/>
       <geom name="target_box_bottom" type="box" size="0.102 0.102 0.006" pos="0 0 0.006" material="target_box_mat"/>
       <geom name="target_box_wall_pos_x" type="box" size="0.006 0.102 0.042" pos="0.096 0 0.048" material="target_box_mat"/>
       <geom name="target_box_wall_neg_x" type="box" size="0.006 0.102 0.042" pos="-0.096 0 0.048" material="target_box_mat"/>
@@ -54,7 +57,7 @@
 
   <keyframe>
     <key name="scene_home"
-         qpos="0 0 0 -1.57079 0 1.57079 0.7853 0.04 0.04 0.5 0 0.22 1 0 0 0"
+         qpos="0 0 0 -1.57079 0 1.57079 0.7853 0.04 0.04 0.5 0 0.22 1 0 0 0 0 0"
          ctrl="0 0 0 -1.57079 0 1.57079 0.7853 255"/>
   </keyframe>
 </mujoco>

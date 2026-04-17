@@ -1,9 +1,47 @@
-"""Shared camera metadata helpers for MuJoCo data collection scripts."""
+"""Shared camera metadata and pointcloud helpers for MuJoCo data collection scripts."""
 
 import os
 import re
 
 import numpy as np
+
+from utils import transform_pcd
+
+
+# ─── Pointcloud utilities ────────────────────────────────────────────────────
+
+def depth_to_pointcloud(depth, fx, fy, cx, cy):
+    """Deproject depth image to camera-frame pointcloud."""
+    H, W = depth.shape
+    u, v = np.meshgrid(np.arange(W), np.arange(H))
+    z = depth
+    x = (u - cx) * z / fx
+    y = (v - cy) * z / fy
+    points = np.stack([x, y, z], axis=-1).reshape(-1, 3)
+
+    # Filter invalid points
+    valid = (points[:, 2] > 0) & (points[:, 2] < 2.0)
+    return points[valid]
+
+
+def camera_pcd_to_world(pcd_cam, cam_extrinsic):
+    """Transform pointcloud from camera frame to world frame.
+
+    MuJoCo camera convention: OpenGL style where -Z points into the scene.
+    Depth deprojection gives +Z into the scene.
+    Apply flip to convert from deprojection convention to MuJoCo camera frame.
+    """
+    # Flip Y and Z to go from OpenCV-like deprojection to OpenGL camera frame
+    flip = np.diag([1.0, -1.0, -1.0])
+    pcd_gl = (flip @ pcd_cam.T).T
+
+    # cam_extrinsic is the camera's world pose: T_world_cam
+    # cam_extrinsic[:3, :3] = rotation, cam_extrinsic[:3, 3] = position
+    pcd_world = transform_pcd(pcd_gl, cam_extrinsic)
+    return pcd_world
+
+
+# ─── Camera metadata ─────────────────────────────────────────────────────────
 
 
 DEFAULT_CAMERA_NAMES = (

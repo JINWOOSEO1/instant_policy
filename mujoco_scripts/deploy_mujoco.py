@@ -1,10 +1,13 @@
-'''
-Deploy Instant Policy on MuJoCo simulation with real-time SAM2 video predictor tracking.
+"""
+Deploy Instant Policy on MuJoCo simulation.
 
-Usage:
-    # Run from project root:
-    python mujoco_scripts/deploy_mujoco.py --object mug
-'''
+By default this uses MuJoCo ground-truth segmentation masks, matching the old
+`deploy_mujoco_gt.py` behavior. Pass `--sam2` to use interactive SAM2-based
+mask initialization and online tracking instead.
+"""
+
+import argparse
+import contextlib
 import os
 import tempfile
 import time
@@ -12,195 +15,137 @@ import time
 import cv2
 import numpy as np
 import torch
-import argparse
 
-from instant_policy import sample_to_cond_demo, GraphDiffusion
-from utils import transform_pcd, subsample_pcd, transform_to_pose
+from instant_policy import GraphDiffusion, sample_to_cond_demo
+from utils import subsample_pcd, transform_pcd, transform_to_pose
 
-from mujoco_scripts.result_io import LiveRolloutWriter, load_raw_demo
-from mujoco_scripts.result_paths import get_live_pose_dir, get_object_root
+from mujoco_scripts.demo_generation import OBJECT_GEOM_NAMES, interactive_mask_selection
+from mujoco_scripts.result_io import LiveRolloutWriter, load_demo_from_results
 from mujoco_scripts.simulation import MujocoEnv
-from mujoco_scripts.gen_mask import interactive_mask_selection
 
-from sam2_repo.sam2.build_sam import build_sam2, build_sam2_video_predictor
-from sam2_repo.sam2.sam2_image_predictor import SAM2ImagePredictor
 
-# ── SAM2 performance optimizations (matches gen_mask.py) ─────────────────────
-torch.autocast(device_type="cuda", dtype=torch.bfloat16).__enter__()
-if torch.cuda.is_available() and torch.cuda.get_device_properties(0).major >= 8:
-    torch.backends.cuda.matmul.allow_tf32 = True
-    torch.backends.cudnn.allow_tf32 = True
+def setup_sam2_torch():
+    """Apply the same torch settings used by the SAM2 demo pipeline."""
+    if torch.cuda.is_available():
+        torch.autocast(device_type="cuda", dtype=torch.bfloat16).__enter__()
+        if torch.cuda.get_device_properties(0).major >= 8:
+            torch.backends.cuda.matmul.allow_tf32 = True
+            torch.backends.cudnn.allow_tf32 = True
 
-import torch._inductor.config as inductor_cfg
-inductor_cfg.fx_graph_cache = True
-if hasattr(inductor_cfg, "fx_graph_remote_cache"):
-    inductor_cfg.fx_graph_remote_cache = False
+    import torch._inductor.config as inductor_cfg
+
+    inductor_cfg.fx_graph_cache = True
+    if hasattr(inductor_cfg, "fx_graph_remote_cache"):
+        inductor_cfg.fx_graph_remote_cache = False
 
 
 class OnlineSAM2Tracker:
-    """Wraps SAM2VideoPredictor for online per-frame tracking.
-
-    Seeds on the first frame with keypoints, then tracks across subsequent
-    frames using a growing memory bank — no keypoints needed after initialization.
-
-    How it works:
-      - inference_state["images"] is a (N, 3, H, W) CPU tensor that we extend
-        each step by writing into a pre-allocated buffer.
-      - SAM2's _get_image_feature() lazily computes backbone features on access,
-        so extending the tensor is sufficient to add a new frame.
-      - propagate_in_video(start_frame_idx=k, max_frame_num_to_track=1) processes
-        only the new frame k, automatically attending to maskmem_features stored
-        from all prior frames (the memory bank).
-    """
+    """Track one camera stream online with SAM2VideoPredictor."""
 
     IMG_MEAN = torch.tensor([0.485, 0.456, 0.406]).view(3, 1, 1)
-    IMG_STD  = torch.tensor([0.229, 0.224, 0.225]).view(3, 1, 1)
-
-    # Pre-allocate buffer in chunks to avoid O(N²) torch.cat copies
+    IMG_STD = torch.tensor([0.229, 0.224, 0.225]).view(3, 1, 1)
     _BUFFER_CHUNK = 64
 
     def __init__(self, video_predictor):
-        self.predictor   = video_predictor
-        self.image_size  = video_predictor.image_size
+        self.predictor = video_predictor
+        self.image_size = video_predictor.image_size
         self.inference_state = None
         self.frame_count = 0
-        self.tmp_dir     = tempfile.mkdtemp()
-        self._img_buffer = None   # pre-allocated (capacity, 3, H, W) CPU tensor
+        self.tmp_dir = tempfile.mkdtemp()
+        self._img_buffer = None
         self._img_capacity = 0
 
+    @contextlib.contextmanager
+    def _suppress_tqdm_output(self):
+        """Silence SAM2's internal tqdm progress bars during live deployment."""
+        with open(os.devnull, "w", encoding="utf-8") as devnull:
+            with contextlib.redirect_stderr(devnull):
+                yield
+
     def _preprocess(self, rgb: np.ndarray) -> torch.Tensor:
-        """HxWx3 uint8 RGB → (3, image_size, image_size) float tensor (ImageNet-normalised)."""
+        """Convert HxWx3 uint8 RGB into SAM2's normalized tensor format."""
         img = cv2.resize(rgb, (self.image_size, self.image_size))
-        t = torch.from_numpy(img).permute(2, 0, 1).float() / 255.0
-        return (t - self.IMG_MEAN) / self.IMG_STD  # CPU tensor
+        tensor = torch.from_numpy(img).permute(2, 0, 1).float() / 255.0
+        return (tensor - self.IMG_MEAN) / self.IMG_STD
 
     def _append_frame(self, img_t: torch.Tensor):
-        """Append a (3, H, W) frame to the pre-allocated buffer and update inference_state."""
+        """Append a frame into the pre-allocated image buffer."""
         idx = self.frame_count
         if idx >= self._img_capacity:
-            # Grow buffer by chunk
             new_cap = self._img_capacity + self._BUFFER_CHUNK
             new_buf = torch.empty(new_cap, *img_t.shape, dtype=img_t.dtype)
             if self._img_buffer is not None:
                 new_buf[:self._img_capacity] = self._img_buffer
             self._img_buffer = new_buf
             self._img_capacity = new_cap
+
         self._img_buffer[idx] = img_t
-        # Point inference_state to a view of the valid portion (no copy)
-        self.inference_state['images'] = self._img_buffer[:idx + 1]
-        self.inference_state['num_frames'] = idx + 1
+        self.inference_state["images"] = self._img_buffer[:idx + 1]
+        self.inference_state["num_frames"] = idx + 1
 
     @torch.inference_mode()
-    def initialize(self, rgb: np.ndarray, points: np.ndarray, labels: np.ndarray) -> np.ndarray:
-        """Initialize tracker with first-frame keypoint prompts.
-
-        Args:
-            rgb:    HxWx3 uint8 RGB image.
-            points: (N, 2) float array of (x, y) pixel coords.
-            labels: (N,) int array, 1=foreground / 0=background.
-
-        Returns:
-            Binary mask (H, W) bool for the first frame.
-        """
-        # init_state() requires a directory of JPEG frames
+    def initialize(self, rgb: np.ndarray, init_mask: np.ndarray) -> np.ndarray:
+        """Initialize the tracker on the first frame using an accepted mask."""
         cv2.imwrite(
-            os.path.join(self.tmp_dir, '00000.jpg'),
+            os.path.join(self.tmp_dir, "00000.jpg"),
             cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR),
         )
 
-        # offload_video_to_cpu=True keeps the image buffer on CPU so GPU memory
-        # doesn't grow as we accumulate frames across the rollout
-        self.inference_state = self.predictor.init_state(
-            self.tmp_dir, offload_video_to_cpu=True
-        )
+        with self._suppress_tqdm_output():
+            self.inference_state = self.predictor.init_state(
+                self.tmp_dir,
+                offload_video_to_cpu=True,
+            )
 
-        # Bootstrap pre-allocated buffer from init_state's loaded frame
-        init_imgs = self.inference_state['images']  # (1, 3, H, W)
+        init_imgs = self.inference_state["images"]
         self._img_buffer = torch.empty(
-            self._BUFFER_CHUNK, *init_imgs.shape[1:], dtype=init_imgs.dtype
+            self._BUFFER_CHUNK,
+            *init_imgs.shape[1:],
+            dtype=init_imgs.dtype,
         )
         self._img_capacity = self._BUFFER_CHUNK
         self._img_buffer[0] = init_imgs[0]
-        self.inference_state['images'] = self._img_buffer[:1]
+        self.inference_state["images"] = self._img_buffer[:1]
 
-        # Seed frame 0 with keypoints → stored in temp_output_dict
-        self.predictor.add_new_points_or_box(
+        _, _, masks = self.predictor.add_new_mask(
             self.inference_state,
             frame_idx=0,
             obj_id=1,
-            points=points,
-            labels=labels,
-            normalize_coords=False,
+            mask=init_mask.astype(np.uint8),
         )
-
-        # propagate_in_video preflight moves temp outputs to cond_frame_outputs,
-        # building the initial memory bank entry for frame 0
-        mask = None
-        for _, _, masks in self.predictor.propagate_in_video(
-            self.inference_state, max_frame_num_to_track=1
-        ):
-            mask = (masks[0, 0].cpu().numpy() > 0)
+        mask = masks[0, 0].cpu().numpy() > 0
+        self.predictor.propagate_in_video_preflight(self.inference_state)
 
         self.frame_count = 1
         return mask
 
     @torch.inference_mode()
     def update(self, rgb: np.ndarray) -> np.ndarray:
-        """Add a new frame and return its mask via memory-bank-guided tracking.
-
-        Calls SAM2 internal methods directly, bypassing propagate_in_video()
-        overhead (preflight, generator setup, processing-order calc per call).
-
-        Args:
-            rgb: HxWx3 uint8 RGB image (same camera as initialize()).
-
-        Returns:
-            Binary mask (H, W) bool, or None if propagation yields no result.
-        """
-        # Preprocess and append to pre-allocated buffer (no torch.cat copy)
+        """Track the next frame with the stored SAM2 memory bank."""
         img_t = self._preprocess(rgb)
         frame_idx = self.frame_count
         self._append_frame(img_t)
         self.frame_count += 1
 
-        # ── Direct _run_single_frame_inference (skip propagate_in_video overhead) ──
+        mask = None
+        with self._suppress_tqdm_output():
+            for _, _, video_res_masks in self.predictor.propagate_in_video(
+                self.inference_state,
+                start_frame_idx=frame_idx,
+                max_frame_num_to_track=1,
+            ):
+                mask = video_res_masks[0, 0].cpu().numpy() > 0
+                break
+
         obj_output_dict = self.inference_state["output_dict_per_obj"][0]
-
-        current_out, pred_masks = self.predictor._run_single_frame_inference(
-            inference_state=self.inference_state,
-            output_dict=obj_output_dict,
-            frame_idx=frame_idx,
-            batch_size=1,
-            is_init_cond_frame=False,
-            point_inputs=None,
-            mask_inputs=None,
-            reverse=False,
-            run_mem_encoder=True,
-        )
-        obj_output_dict["non_cond_frame_outputs"][frame_idx] = current_out
-        self.inference_state["frames_tracked_per_obj"][0][frame_idx] = {
-            "reverse": False
-        }
-
-        # Resize mask to original video resolution
-        _, video_res_masks = self.predictor._get_orig_video_res_output(
-            self.inference_state, pred_masks
-        )
-        mask = (video_res_masks[0, 0].cpu().numpy() > 0)
-
-        # ── Prune old non-conditioning frame outputs ──
-        # SAM2's memory bank only uses the most recent num_maskmem frames,
-        # plus object pointers from max_obj_ptrs_in_encoder frames.
-        # Keeping entries beyond that wastes memory and slows dict lookups.
         max_keep = max(
-            getattr(self.predictor, 'num_maskmem', 7),
-            getattr(self.predictor, 'max_obj_ptrs_in_encoder', 16),
+            getattr(self.predictor, "num_maskmem", 7),
+            getattr(self.predictor, "max_obj_ptrs_in_encoder", 16),
         )
         non_cond = obj_output_dict["non_cond_frame_outputs"]
         if len(non_cond) > max_keep * 2:
-            sorted_keys = sorted(non_cond.keys())
             cutoff = frame_idx - max_keep
-            for old_key in sorted_keys:
+            for old_key in sorted(non_cond.keys()):
                 if old_key < cutoff:
                     del non_cond[old_key]
                 else:
@@ -209,41 +154,56 @@ class OnlineSAM2Tracker:
         return mask
 
 
-if __name__ == '__main__':
+def main(argv=None):
     parser = argparse.ArgumentParser(
-        description='Deploy Instant Policy in MuJoCo with SAM2 video-predictor tracking'
+        description="Deploy Instant Policy in MuJoCo with GT masks or optional SAM2 masks"
     )
-    parser.add_argument('--object', type=str, default='mug')
-    parser.add_argument('--sam2_config', type=str,
-                        default='configs/sam2.1/sam2.1_hiera_s.yaml',
-                        help='SAM2 config path (relative to sam2 package)')
-    parser.add_argument('--sam2_ckpt', type=str,
-                        default='sam2_repo/checkpoints/sam2.1_hiera_small.pt',
-                        help='SAM2 checkpoint path')
-    parser.add_argument('--num_demos', type=int, default=1,
-                        help='Number of demos to load (demo_0.npy, demo_1.npy, ...)')
-    parser.add_argument('--execution_horizon', type=int, default=8,
-                        help='Number of predicted actions to execute per inference step')
-    parser.add_argument('--debug', action='store_true',
-                        help='Load pre-saved CoppeliaSim demos and live data for cross-env debugging')
-    parser.add_argument('--debug_data_dir', type=str, default='results/plate',
-                        help='Directory containing demo/demo_i/demo_i.npy (or legacy full_sample_demos.npy) and live/step_*.npy')
-    args = parser.parse_args()
+    parser.add_argument("--object", type=str, default="mug")
+    parser.add_argument(
+        "--sam2",
+        action="store_true",
+        help="Use interactive SAM2 masks instead of MuJoCo ground-truth masks",
+    )
+    parser.add_argument(
+        "--sam2_config",
+        type=str,
+        default="configs/sam2.1/sam2.1_hiera_s.yaml",
+        help="SAM2 config path (used only with --sam2)",
+    )
+    parser.add_argument(
+        "--sam2_ckpt",
+        type=str,
+        default="sam2_repo/checkpoints/sam2.1_hiera_small.pt",
+        help="SAM2 checkpoint path (used only with --sam2)",
+    )
+    parser.add_argument(
+        "--num_demos",
+        type=int,
+        default=1,
+        help="Number of demos to load (demo_0.npy, demo_1.npy, ...)",
+    )
+    parser.add_argument(
+        "--execution_horizon",
+        type=int,
+        default=8,
+        help="Number of predicted actions to execute per inference step",
+    )
+    args = parser.parse_args(argv)
 
     ############################################################################
     # Rollout parameters
-    num_demos           = args.num_demos
-    num_traj_wp         = 10
+    num_demos = args.num_demos
+    num_traj_wp = 10
     num_diffusion_iters = 4
     max_execution_steps = 100
-    FPS                 = 10.0
+    FPS = 10.0
     ############################################################################
     # Load Instant Policy model
-    model_path = './checkpoints'
-    device     = 'cuda' if torch.cuda.is_available() else 'cpu'
+    model_path = "./checkpoints"
+    device = "cuda" if torch.cuda.is_available() else "cpu"
 
     model = GraphDiffusion.load_from_checkpoint(
-        f'{model_path}/model.pt',
+        f"{model_path}/model.pt",
         device=device,
         strict=True,
         map_location=device,
@@ -254,282 +214,187 @@ if __name__ == '__main__':
 
     ############################################################################
     # Load demonstration data
-    data_dir = get_object_root(args.object)
+    demos_processed = []
+    for demo_idx in range(num_demos):
+        demo, demo_path, min_len = load_demo_from_results(args.object, demo_idx)
+        demos_processed.append(sample_to_cond_demo(demo, num_traj_wp))
+        print(f"Loaded demo {demo_idx} ({min_len} frames) from {demo_path}")
 
-    if args.debug:
-        # ── Debug mode: load pre-saved demos (already in MuJoCo world frame) ─
-        debug_demo_dir = os.path.join(args.debug_data_dir, 'demo')
-        debug_demo_paths = []
-        if os.path.isdir(debug_demo_dir):
-            demo_dir_entries = sorted(
-                [
-                    entry_name
-                    for entry_name in os.listdir(debug_demo_dir)
-                    if entry_name.startswith('demo_') and os.path.isdir(os.path.join(debug_demo_dir, entry_name))
-                ],
-                key=lambda entry_name: int(entry_name.split('_')[-1]),
-            )
-            debug_demo_paths = [
-                os.path.join(debug_demo_dir, entry_name, f'{entry_name}.npy')
-                for entry_name in demo_dir_entries
-                if os.path.exists(os.path.join(debug_demo_dir, entry_name, f'{entry_name}.npy'))
-            ]
-            if not debug_demo_paths:
-                debug_demo_paths = [
-                    os.path.join(debug_demo_dir, file_name)
-                    for file_name in sorted(
-                        [
-                            file_name
-                            for file_name in os.listdir(debug_demo_dir)
-                            if file_name.startswith('demo_') and file_name.endswith('.npy')
-                        ],
-                        key=lambda file_name: int(file_name.split('_')[-1].split('.')[0]),
-                    )
-                ]
-
-        if debug_demo_paths:
-            loaded_demos = []
-            for debug_demo_path in debug_demo_paths:
-                demo = np.load(debug_demo_path, allow_pickle=True).item()
-                min_len = min(len(demo['pcds']), len(demo['T_w_es']), len(demo['grips']))
-                demo['pcds'] = list(demo['pcds'][:min_len])
-                demo['T_w_es'] = list(demo['T_w_es'][:min_len])
-                demo['grips'] = list(demo['grips'][:min_len])
-                loaded_demos.append(sample_to_cond_demo(demo, num_traj_wp))
-            debug_demo_source = debug_demo_dir
-        else:
-            debug_demo_path = os.path.join(args.debug_data_dir, 'full_sample_demos.npy')
-            loaded_demos = list(np.load(debug_demo_path, allow_pickle=True))
-            debug_demo_source = debug_demo_path
-
-        full_sample = {
-            'demos': loaded_demos,
-            'live':  {},
-        }
-        num_demos = len(loaded_demos)
-        model.set_num_demos(num_demos)
-        print(f'[DEBUG] Loaded {num_demos} demos from {debug_demo_source}')
-
-        # Count available live steps
-        debug_live_dir = os.path.join(args.debug_data_dir, 'live')
-        debug_live_steps = sorted([
-            f for f in os.listdir(debug_live_dir)
-            if f.startswith('step_') and f.endswith('.npy')
-        ])
-        max_execution_steps = len(debug_live_steps)
-        print(f'[DEBUG] Found {max_execution_steps} live steps in {debug_live_dir}')
-
-        # Prepare debug output directory
-        debug_output_dir = os.path.join(data_dir, 'live(mujoco)')
-        os.makedirs(debug_output_dir, exist_ok=True)
-    else:
-        demos_processed = []
-        for demo_idx in range(num_demos):
-            demo, demo_path, min_len = load_raw_demo(args.object, demo_idx)
-
-            demos_processed.append(sample_to_cond_demo(demo, num_traj_wp))
-            print(f'Loaded demo {demo_idx} ({min_len} frames) from {demo_path}')
-
-        full_sample = {
-            'demos': demos_processed,
-            'live':  {},
-        }
-
-    assert len(full_sample['demos'][0]['obs']) == num_traj_wp
+    full_sample = {
+        "demos": demos_processed,
+        "live": {},
+    }
+    assert len(full_sample["demos"][0]["obs"]) == num_traj_wp
 
     ############################################################################
-    # Initialise MuJoCo environment (skip in debug mode)
-    if not args.debug:
-        env = MujocoEnv(args.object)
-        env.launch_viewer()
+    # Initialise MuJoCo environment
+    env = MujocoEnv(args.object)
+    env.launch_viewer()
 
-        # Cache static camera intrinsics / extrinsics (cameras don't move)
-        cam_names  = env.cam_names
-        cam_params = {c: env.get_camera_params(c) for c in cam_names}
+    cam_names = env.cam_names
+    cam_params = {cam_name: env.get_camera_params(cam_name) for cam_name in cam_names}
+    dt = 1.0 / FPS
 
-        # How many simulation substeps to take per action to approximate FPS
-        dt = 1.0 / FPS
-        sim_steps_per_action = max(1, int(dt / env.model.opt.timestep / args.execution_horizon))
+    ############################################################################
+    # Segmentation setup
+    if args.sam2:
+        setup_sam2_torch()
+        from sam2_repo.sam2.build_sam import build_sam2, build_sam2_video_predictor
+        from sam2_repo.sam2.sam2_image_predictor import SAM2ImagePredictor
 
-        ########################################################################
-        # Load SAM2
-        print('Loading SAM2...')
-        # Image predictor: used only for the interactive first-frame mask preview UI
+        print("Segmentation mode: SAM2")
+        print("Loading SAM2...")
         image_predictor = SAM2ImagePredictor(
             build_sam2(args.sam2_config, args.sam2_ckpt, device=device)
         )
-        # Video predictor: used for memory-bank-based online tracking every step
         video_predictor = build_sam2_video_predictor(
-            args.sam2_config, args.sam2_ckpt, device=device,
+            args.sam2_config,
+            args.sam2_ckpt,
+            device=device,
         )
-        trackers = {c: OnlineSAM2Tracker(video_predictor) for c in cam_names}
-        print('SAM2 loaded.')
+        trackers = {cam_name: OnlineSAM2Tracker(video_predictor) for cam_name in cam_names}
+        init_masks_per_cam = {}
+        initialized_cam = {cam_name: False for cam_name in cam_names}
+        print("SAM2 loaded.")
+    else:
+        print("Segmentation mode: MuJoCo GT")
+        if args.object not in OBJECT_GEOM_NAMES:
+            raise ValueError(
+                f'Unknown object "{args.object}". '
+                f"Available: {sorted(OBJECT_GEOM_NAMES.keys())}"
+            )
+        object_geom_ids = env.get_geom_ids_by_names(OBJECT_GEOM_NAMES[args.object])
+        print(
+            f'Object "{args.object}" has {len(object_geom_ids)} geom(s): '
+            f"{sorted(object_geom_ids)}"
+        )
 
     ############################################################################
     # Rollout loop
-    if args.debug:
-        # ── DEBUG MODE: replay saved CoppeliaSim live data ──────────────────
-        print(f'\n[DEBUG] Starting replay of {max_execution_steps} steps...')
-        for k in range(max_execution_steps):
-            step_path = os.path.join(debug_live_dir, f'step_{k:03d}.npy')
-            step_data = np.load(step_path, allow_pickle=True).item()
+    live_writer = LiveRolloutWriter(args.object)
 
-            pcd_ee = step_data['pcd_ee']
-            T_w_e = step_data['T_w_e']            # already in MuJoCo world frame
-            grip = step_data['grip']
+    for k in range(max_execution_steps):
+        if not env.viewer_is_running():
+            print("Viewer closed -- stopping.")
+            break
 
-            # Diagnostic prints
-            print(f'  [step {k:3d}] PCD bounds: '
-                  f'min={pcd_ee.min(axis=0)}, max={pcd_ee.max(axis=0)}, '
-                  f'npts={len(pcd_ee)}, T_w_e pos={T_w_e[:3,3]}, grip={grip}')
+        t_loop_start = time.time()
 
-            # Run model inference with loaded data
-            full_sample['live'] = {
-                'obs':    [pcd_ee],
-                'grips':  [grip],
-                'T_w_es': [T_w_e],
-            }
-            actions, pred_grips = model.predict_actions(full_sample)
+        if args.sam2 and k == 0:
+            for cam_name in cam_names:
+                rgb, _ = env.render_rgbd(cam_name)
+                print(f"\n[{cam_name}] Select object keypoints.")
+                points, labels, init_mask = interactive_mask_selection(
+                    rgb,
+                    image_predictor,
+                    cam_name,
+                    return_mask=True,
+                )
+                init_masks_per_cam[cam_name] = init_mask
+                print(
+                    f"[{cam_name}] {len(points)} keypoint(s) confirmed. "
+                    f"Accepted mask area={int(init_mask.sum())} px."
+                )
 
-            # Save debug output for comparison
-            np.save(os.path.join(debug_output_dir, f'step_{k:03d}.npy'), {
-                'pcd_ee': pcd_ee,
-                'T_w_e': T_w_e.copy(),
-                'grip': grip,
-                'actions': actions.copy(),
-                'pred_grips': pred_grips.copy(),
-                'actions_cs': step_data['actions'],       # original CoppeliaSim predictions
-                'pred_grips_cs': step_data['pred_grips'], # original CoppeliaSim predictions
-            }, allow_pickle=True)
+        # ── Observe current robot state ──────────────────────────────────────
+        t0 = time.time()
+        T_w_e = env.get_ee_pose()
+        grip = env.get_gripper_state()
+        t_state = time.time() - t0
 
-            print(f'  [step {k:3d}] pred_grips: {pred_grips.flatten()}')
-            print(f'  [step {k:3d}] pred_grips_cs: {step_data["pred_grips"].flatten()}')
-
-        print(f'\n[DEBUG] Replay finished. Debug outputs saved to {debug_output_dir}')
-        print(f'[DEBUG] Compare with: {debug_live_dir}')
-
-    else:
-        # ── NORMAL MODE: live SAM2 tracking + MuJoCo execution ──────────────
-        live_writer = LiveRolloutWriter(args.object)
-        ee_pose_deploy_dir = None
-        if not live_writer.enabled:
-            ee_pose_deploy_dir = get_live_pose_dir(args.object)
-            os.makedirs(ee_pose_deploy_dir, exist_ok=True)
-        ee_pose_counter = 0
-
-        points_per_cam  = {}
-        labels_per_cam  = {}
-        initialized_cam = {c: False for c in cam_names}
-
-        for k in range(max_execution_steps):
-            if not env.viewer_is_running():
-                print('Viewer closed — stopping.')
-                break
-
-            t_loop_start = time.time()
-
-            # ── Step 0 only: interactive keypoint selection ─────────────────
-            if k == 0:
-                for cam in cam_names:
-                    rgb, _ = env.render_rgbd(cam)
-                    print(f'\n[{cam}] Select object keypoints.')
-                    pts, lbs = interactive_mask_selection(rgb, image_predictor, cam)
-                    points_per_cam[cam] = pts
-                    labels_per_cam[cam] = lbs
-                    print(f'[{cam}] {len(pts)} keypoint(s) confirmed.')
-
-            # ── Observe current robot state ─────────────────────────────────
-            t0 = time.time()
-            T_w_e = env.get_ee_pose()       # (4, 4) SE3, world frame
-            grip  = env.get_gripper_state() # 0=closed, 1=open
-            t_state = time.time() - t0
-
-            def track_mask(cam_name, rgb, _depth):
+        if args.sam2:
+            def mask_fn(cam_name, rgb, _depth):
                 if not initialized_cam[cam_name]:
-                    # First frame: seed video predictor with keypoints
                     mask = trackers[cam_name].initialize(
-                        rgb, points_per_cam[cam_name], labels_per_cam[cam_name]
+                        rgb,
+                        init_masks_per_cam[cam_name],
                     )
                     initialized_cam[cam_name] = True
                     return mask
-
-                # Subsequent frames: memory-bank-guided tracking
                 return trackers[cam_name].update(rgb)
+        else:
+            def mask_fn(cam_name, _rgb, _depth):
+                return env.render_seg_mask(cam_name, object_geom_ids)
 
-            pcd_w, pcd_stats = env.get_segmented_pcd(
-                track_mask,
-                cam_names=cam_names,
-                cam_params=cam_params,
-                return_stats=True,
-            )
-            t_render_total = pcd_stats['render']
-            t_sam2_total = pcd_stats['mask']
-            t_pcd_total = pcd_stats['pcd']
+        pcd_w, pcd_stats = env.get_segmented_pcd(
+            mask_fn,
+            cam_names=cam_names,
+            cam_params=cam_params,
+            return_stats=True,
+        )
+        t_render_total = pcd_stats["render"]
+        t_seg_total = pcd_stats["mask"]
+        t_pcd_total = pcd_stats["pcd"]
 
-            if pcd_w is None:
-                print(f'[step {k}] No valid pointcloud — skipping inference.')
-                env.sync_viewer()
-                continue
+        if pcd_w is None:
+            print(f"[step {k}] No valid pointcloud -- skipping inference.")
+            env.sync_viewer()
+            continue
 
-            # Transform from world frame to EE (gripper_tcp) frame
-            pcd_ee = transform_pcd(pcd_w, np.linalg.inv(T_w_e))
+        pcd_ee = transform_pcd(pcd_w, np.linalg.inv(T_w_e))
 
-            # ── Model inference ─────────────────────────────────────────────
-            t0 = time.time()
-            live_obs = subsample_pcd(pcd_ee)
-            full_sample['live'] = {
-                'obs':    [live_obs],
-                'grips':  [grip],
-                'T_w_es': [T_w_e],
-            }
-            actions, pred_grips = model.predict_actions(full_sample)
-            live_writer.save_step(
-                k,
-                live_obs,
-                T_w_e,
-                grip,
-                actions,
-                pred_grips,
-                seg_pcd_full=pcd_ee,
-            )
-            print(f"Predicted gripps; {pred_grips.flatten()}")
-            t_inference = time.time() - t0
+        # ── Model inference ──────────────────────────────────────────────────
+        t0 = time.time()
+        live_obs = subsample_pcd(pcd_ee)
+        full_sample["live"] = {
+            "obs": [live_obs],
+            "grips": [grip],
+            "T_w_es": [T_w_e],
+        }
+        actions, pred_grips = model.predict_actions(full_sample)
+        live_writer.save_step(
+            k,
+            live_obs,
+            T_w_e,
+            grip,
+            actions,
+            pred_grips,
+            seg_pcd_full=pcd_ee,
+        )
+        print(f"Predicted grips: {pred_grips.flatten()}")
+        t_inference = time.time() - t0
 
-            # ── Execute actions ─────────────────────────────────────────────
-            t0 = time.time()
-            actions_executed = 0
-            for j in range(args.execution_horizon):
-                T_w_e_next = T_w_e @ actions[j]
-                pose_7d    = transform_to_pose(T_w_e_next)
-                grip_binary = int((pred_grips[j] + 1) / 2 > 0.5)
+        # ── Execute actions (IK + physics convergence loop) ────────────────
+        t0 = time.time()
+        actions_executed = 0
 
-                if live_writer.enabled:
-                    live_writer.append_execution(T_w_e_next, grip_binary)
-                else:
-                    np.save(os.path.join(ee_pose_deploy_dir, f'{ee_pose_counter:04d}.npy'), T_w_e_next)
-                    ee_pose_counter += 1
+        for j in range(args.execution_horizon):
+            T_w_e_next = T_w_e @ actions[j]
+            pose_next = transform_to_pose(T_w_e_next)
+            grip_binary = int((pred_grips[j] + 1) / 2 > 0.5)
 
-                env.set_target(pose_7d[:3], pose_7d[3:], grip_binary * 255)
-                env.step(n_substeps=sim_steps_per_action)
-                env.sync_viewer()
-                actions_executed += 1
-            t_execution = time.time() - t0
+            live_writer.append_execution(T_w_e_next, grip_binary)
 
-            # ── Maintain target FPS ─────────────────────────────────────────
-            elapsed = time.time() - t_loop_start
-            sleep_time = max(0.0, dt - elapsed)
-            time.sleep(sleep_time)
+            grip_val = grip_binary * 255
+            env.set_target(pose_next[:3], pose_next[3:], grip_val)
+            env.step(n_substeps=50, converge=True, max_ik_iters=50)
 
-            # ── Timing log ──────────────────────────────────────────────────
-            print(f'[step {k:3d}] '
-                  f'total={elapsed*1000:6.1f}ms | '
-                  f'state={t_state*1000:5.1f}ms | '
-                  f'render={t_render_total*1000:5.1f}ms | '
-                  f'sam2={t_sam2_total*1000:6.1f}ms | '
-                  f'pcd={t_pcd_total*1000:5.1f}ms | '
-                  f'inference={t_inference*1000:6.1f}ms | '
-                  f'exec={t_execution*1000:5.1f}ms({actions_executed}acts) | '
-                  f'sleep={sleep_time*1000:5.1f}ms')
+            env.sync_viewer()
+            actions_executed += 1
 
-        env.close()
-    print('Deployment finished.')
+        t_execution = time.time() - t0
+
+        # ── Maintain target FPS ──────────────────────────────────────────────
+        elapsed = time.time() - t_loop_start
+        sleep_time = max(0.0, dt - elapsed)
+        time.sleep(sleep_time)
+
+        # ── Timing log ───────────────────────────────────────────────────────
+        print(
+            f"[step {k:3d}] "
+            f"total={elapsed*1000:6.1f}ms | "
+            f"state={t_state*1000:5.1f}ms | "
+            f"render={t_render_total*1000:5.1f}ms | "
+            f"seg={t_seg_total*1000:6.1f}ms | "
+            f"pcd={t_pcd_total*1000:5.1f}ms | "
+            f"inference={t_inference*1000:6.1f}ms | "
+            f"exec={t_execution*1000:5.1f}ms({actions_executed}acts) | "
+            f"sleep={sleep_time*1000:5.1f}ms"
+        )
+
+    env.close()
+    print("Deployment finished.")
+
+
+if __name__ == "__main__":
+    main()
