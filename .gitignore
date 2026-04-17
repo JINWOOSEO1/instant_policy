@@ -16,3 +16,7 @@ sam2_repo/
 
 archive/
 results/
+
+# Simulation
+RLBench/
+PyRep/

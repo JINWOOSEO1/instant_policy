@@ -1,7 +1,7 @@
 """
 Generate segmented pointclouds from masks and depth images.
 Combines masks with depth data, deprojects to 3D, transforms to world frame,
-and merges pointclouds from both cameras.
+and merges pointclouds from all available cameras.
 
 Usage:
     python gen_seg_pcd.py --object mug
@@ -12,6 +12,15 @@ import os
 import glob
 
 import numpy as np
+from mujoco_scripts.camera_utils import load_camera_entries
+from mujoco_scripts.result_paths import (
+    get_camera_params_path,
+    get_demo_seg_pcd_dir,
+    get_object_root,
+    resolve_demo_mask_dir,
+    resolve_demo_pose_dir,
+    resolve_demo_rgbd_dir,
+)
 from utils import transform_pcd, downsample_pcd
 
 
@@ -49,33 +58,45 @@ def camera_pcd_to_world(pcd_cam, cam_extrinsic):
 def main():
     parser = argparse.ArgumentParser(description='Generate segmented pointclouds')
     parser.add_argument('--object', type=str, default='mug', help='Object name')
+    parser.add_argument('--demo_index', type=int, default=0, help='Demo index to process')
     parser.add_argument('--voxel_size', type=float, default=0.005, help='Voxel size for downsampling')
     args = parser.parse_args()
 
-    data_dir = f'results/{args.object}'
-    rgbd_dir = os.path.join(data_dir, 'RGBD_images')
-    mask_dir = os.path.join(data_dir, 'mask')
-    pcd_dir = os.path.join(data_dir, 'seg_pcd')
+    object_root = get_object_root(args.object)
+    rgbd_dir = resolve_demo_rgbd_dir(args.object, args.demo_index)
+    mask_dir = resolve_demo_mask_dir(args.object, args.demo_index)
+    pcd_dir = get_demo_seg_pcd_dir(args.object, args.demo_index)
     os.makedirs(pcd_dir, exist_ok=True)
 
     # Load camera parameters
-    cam_params_path = os.path.join(data_dir, 'camera_params.npz')
+    cam_params_path = get_camera_params_path(args.object)
     if not os.path.exists(cam_params_path):
         print(f'Camera parameters not found: {cam_params_path}')
         return
     cam_params = np.load(cam_params_path)
-
-    # Load EE poses for world-to-EE-frame transformation
-    ee_pose_dir = os.path.join(data_dir, 'EE_pose')
-    if not os.path.exists(ee_pose_dir):
-        print(f'EE pose directory not found: {ee_pose_dir}')
+    camera_entries = load_camera_entries(object_root, rgbd_dir=rgbd_dir)
+    if not camera_entries:
+        print(f'No camera metadata found in {object_root}')
+        cam_params.close()
         return
 
-    # Determine number of frames from depth files
-    depth_files = sorted(glob.glob(os.path.join(rgbd_dir, 'cam0', '*_depth.npy')))
-    num_frames = len(depth_files)
+    # Load EE poses for world-to-EE-frame transformation
+    pose_dir = resolve_demo_pose_dir(args.object, args.demo_index)
+    if not os.path.exists(pose_dir):
+        print(f'EE pose directory not found: {pose_dir}')
+        cam_params.close()
+        return
+
+    # Determine number of frames from the first camera directory that has depth files.
+    num_frames = 0
+    for camera in camera_entries:
+        depth_files = sorted(glob.glob(os.path.join(rgbd_dir, camera['dir'], '*_depth.npy')))
+        if depth_files:
+            num_frames = len(depth_files)
+            break
     if num_frames == 0:
         print('No depth files found.')
+        cam_params.close()
         return
 
     print(f'Processing {num_frames} frames...')
@@ -83,15 +104,17 @@ def main():
     for frame_idx in range(num_frames):
         cam_pcds = []
 
-        for cam_idx in range(3):
+        for camera in camera_entries:
+            cam_idx = camera['index']
+            cam_dir_name = camera['dir']
             # Load mask
-            mask_path = os.path.join(mask_dir, f'cam{cam_idx}_{frame_idx:04d}_mask.npy')
+            mask_path = os.path.join(mask_dir, f'{cam_dir_name}_{frame_idx:04d}_mask.npy')
             if not os.path.exists(mask_path):
                 continue
             mask = np.load(mask_path)
 
             # Load depth
-            depth_path = os.path.join(rgbd_dir, f'cam{cam_idx}', f'{frame_idx:04d}_depth.npy')
+            depth_path = os.path.join(rgbd_dir, cam_dir_name, f'{frame_idx:04d}_depth.npy')
             if not os.path.exists(depth_path):
                 continue
             depth = np.load(depth_path)
@@ -127,13 +150,14 @@ def main():
                 pcd_merged = downsample_pcd(pcd_merged, voxel_size=args.voxel_size)
 
         # Transform from world frame to EE (gripper_tcp) frame
-        ee_pose_path = os.path.join(ee_pose_dir, f'{frame_idx:04d}.npy')
+        ee_pose_path = os.path.join(pose_dir, f'{frame_idx:04d}.npy')
         if not os.path.exists(ee_pose_path):
             print(f'  Frame {frame_idx}: EE pose not found, skipping')
             continue
         T_w_e = np.load(ee_pose_path)  # (4, 4) world-to-EE pose
         if len(pcd_merged) > 0:
-            pcd_merged = transform_pcd(pcd_merged, np.linalg.inv(T_w_e))
+            # pcd_merged = transform_pcd(pcd_merged, np.linalg.inv(T_w_e))
+            pcd_merged = pcd_merged
 
         # Save per-frame pointcloud (in EE frame)
         np.save(os.path.join(pcd_dir, f'{frame_idx:04d}.npy'), pcd_merged.astype(np.float32))
@@ -141,6 +165,7 @@ def main():
         if frame_idx % 50 == 0:
             print(f'  Frame {frame_idx}/{num_frames}: {len(pcd_merged)} points')
 
+    cam_params.close()
     print(f'\nDone! Saved {num_frames} segmented pointclouds to {pcd_dir}/')
 
 

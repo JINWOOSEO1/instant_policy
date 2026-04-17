@@ -104,15 +104,31 @@ echo "============================================================"
 echo ""
 
 RESULT_DIR="results/${OBJECT}"
+DEMO_DIR="${RESULT_DIR}/demo"
+DEMO_POSE_SUBDIR="T_w_e"
+LIVE_DIR="${RESULT_DIR}/live"
+LIVE_POSE_DIR="${LIVE_DIR}/T_w_e"
+COLLECT_ARGS=(--object "$OBJECT" --fps "$FPS" --max_frames "$MAX_FRAMES")
+
+if [[ "$OBJECT" == "box" || "$OBJECT" == "box_2" ]]; then
+    COLLECT_ARGS+=(--rule)
+fi
 
 # ─── Clean previous results (including old demo files) ────────────────────────
 echo "  Cleaning previous results in ${RESULT_DIR} ..."
-rm -f "${RESULT_DIR}"/demo_*.npy
-for subdir in EE_pose mask RGBD_images/cam0 RGBD_images/cam1 RGBD_images/cam2 seg_pcd; do
-    if [[ -d "${RESULT_DIR}/${subdir}" ]]; then
-        rm -rf "${RESULT_DIR}/${subdir:?}"/*
+rm -rf "${DEMO_DIR}"/demo_*
+for subdir in "${DEMO_POSE_SUBDIR}" mask RGBD_images seg_pcd gripper_state; do
+    if [[ -d "${DEMO_DIR}/${subdir}" ]]; then
+        rm -rf "${DEMO_DIR}/${subdir:?}"
     fi
 done
+rm -f "${DEMO_DIR}/gripper_state.npy"
+
+rm -f "${LIVE_DIR}"/step_*.npy
+if [[ -d "${LIVE_POSE_DIR}" ]]; then
+    rm -rf "${LIVE_POSE_DIR:?}"/*
+fi
+rm -f "${LIVE_DIR}/gripper_state.npy"
 echo "  Done."
 echo ""
 
@@ -128,10 +144,7 @@ for demo_idx in $(seq 0 $((NUM_DEMOS - 1))); do
         echo "──────────────────────────────────────────────────────────"
         echo "  Step 1/4: Collect demo (WebXR teleoperation)"
         echo "──────────────────────────────────────────────────────────"
-        python mujoco_scripts/simulation.py \
-            --object "$OBJECT" \
-            --fps "$FPS" \
-            --max_frames "$MAX_FRAMES"
+        python mujoco_scripts/simulation.py "${COLLECT_ARGS[@]}" --demo_index "$demo_idx"
         echo ""
         echo "  Demo collection complete."
         echo ""
@@ -144,6 +157,7 @@ for demo_idx in $(seq 0 $((NUM_DEMOS - 1))); do
         echo "──────────────────────────────────────────────────────────"
         python mujoco_scripts/gen_mask.py \
             --object "$OBJECT" \
+            --demo_index "$demo_idx" \
             --sam2_config "$SAM2_CONFIG" \
             --sam2_ckpt "$SAM2_CKPT"
         echo ""
@@ -158,6 +172,7 @@ for demo_idx in $(seq 0 $((NUM_DEMOS - 1))); do
         echo "──────────────────────────────────────────────────────────"
         python mujoco_scripts/gen_seg_pcd.py \
             --object "$OBJECT" \
+            --demo_index "$demo_idx" \
             --voxel_size "$VOXEL_SIZE"
         echo ""
         echo "  Pointcloud generation complete."
@@ -173,18 +188,6 @@ for demo_idx in $(seq 0 $((NUM_DEMOS - 1))); do
         --demo_index "$demo_idx"
     echo ""
 
-    # ─── Clean intermediate files for next demo ──────────────────────────
-    if [[ $demo_idx -lt $((NUM_DEMOS - 1)) ]]; then
-        echo "  Cleaning intermediate files for next demo ..."
-        for subdir in EE_pose mask RGBD_images/cam0 RGBD_images/cam1 RGBD_images/cam2 seg_pcd; do
-            if [[ -d "${RESULT_DIR}/${subdir}" ]]; then
-                rm -rf "${RESULT_DIR}/${subdir:?}"/*
-            fi
-        done
-        rm -f "${RESULT_DIR}/gripper_state.npy"
-        echo "  Done."
-        echo ""
-    fi
 done
 
 # ─── Step 4: Deploy ─────────────────────────────────────────────────────────
@@ -192,11 +195,9 @@ if run_step "deploy"; then
     echo "──────────────────────────────────────────────────────────"
     echo "  Step 4/4: Deploy Instant Policy"
     echo "──────────────────────────────────────────────────────────"
-    python mujoco_scripts/deploy_mujoco.py \
+    python mujoco_scripts/deploy_mujoco_gt.py \
         --object "$OBJECT" \
         --num_demos "$NUM_DEMOS" \
-        --sam2_config "$SAM2_CONFIG" \
-        --sam2_ckpt "$SAM2_CKPT" \
         --execution_horizon "$EXECUTION_HORIZON"
     echo ""
     echo "  Deployment complete."

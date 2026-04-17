@@ -17,8 +17,9 @@ import argparse
 from instant_policy import sample_to_cond_demo, GraphDiffusion
 from utils import transform_pcd, subsample_pcd, transform_to_pose
 
+from mujoco_scripts.result_io import LiveRolloutWriter, load_raw_demo
+from mujoco_scripts.result_paths import get_live_pose_dir, get_object_root
 from mujoco_scripts.simulation import MujocoEnv
-from mujoco_scripts.gen_seg_pcd import depth_to_pointcloud, camera_pcd_to_world
 from mujoco_scripts.gen_mask import interactive_mask_selection
 
 from sam2_repo.sam2.build_sam import build_sam2, build_sam2_video_predictor
@@ -223,6 +224,10 @@ if __name__ == '__main__':
                         help='Number of demos to load (demo_0.npy, demo_1.npy, ...)')
     parser.add_argument('--execution_horizon', type=int, default=8,
                         help='Number of predicted actions to execute per inference step')
+    parser.add_argument('--debug', action='store_true',
+                        help='Load pre-saved CoppeliaSim demos and live data for cross-env debugging')
+    parser.add_argument('--debug_data_dir', type=str, default='results/plate',
+                        help='Directory containing demo/demo_i/demo_i.npy (or legacy full_sample_demos.npy) and live/step_*.npy')
     args = parser.parse_args()
 
     ############################################################################
@@ -249,188 +254,282 @@ if __name__ == '__main__':
 
     ############################################################################
     # Load demonstration data
-    data_dir = f'results/{args.object}'
-    demos_processed = []
-    for demo_idx in range(num_demos):
-        demo_path = os.path.join(data_dir, f'demo_{demo_idx}.npy')
-        demo = np.load(demo_path, allow_pickle=True).item()
+    data_dir = get_object_root(args.object)
 
-        # Ensure all demo lists have the same length
-        min_len = min(len(demo['pcds']), len(demo['T_w_es']), len(demo['grips']))
-        demo['pcds']   = demo['pcds'][:min_len]
-        demo['T_w_es'] = demo['T_w_es'][:min_len]
-        demo['grips']  = demo['grips'][:min_len]
+    if args.debug:
+        # ── Debug mode: load pre-saved demos (already in MuJoCo world frame) ─
+        debug_demo_dir = os.path.join(args.debug_data_dir, 'demo')
+        debug_demo_paths = []
+        if os.path.isdir(debug_demo_dir):
+            demo_dir_entries = sorted(
+                [
+                    entry_name
+                    for entry_name in os.listdir(debug_demo_dir)
+                    if entry_name.startswith('demo_') and os.path.isdir(os.path.join(debug_demo_dir, entry_name))
+                ],
+                key=lambda entry_name: int(entry_name.split('_')[-1]),
+            )
+            debug_demo_paths = [
+                os.path.join(debug_demo_dir, entry_name, f'{entry_name}.npy')
+                for entry_name in demo_dir_entries
+                if os.path.exists(os.path.join(debug_demo_dir, entry_name, f'{entry_name}.npy'))
+            ]
+            if not debug_demo_paths:
+                debug_demo_paths = [
+                    os.path.join(debug_demo_dir, file_name)
+                    for file_name in sorted(
+                        [
+                            file_name
+                            for file_name in os.listdir(debug_demo_dir)
+                            if file_name.startswith('demo_') and file_name.endswith('.npy')
+                        ],
+                        key=lambda file_name: int(file_name.split('_')[-1].split('.')[0]),
+                    )
+                ]
 
-        demos_processed.append(sample_to_cond_demo(demo, num_traj_wp))
-        print(f'Loaded demo {demo_idx} ({min_len} frames) from {demo_path}')
+        if debug_demo_paths:
+            loaded_demos = []
+            for debug_demo_path in debug_demo_paths:
+                demo = np.load(debug_demo_path, allow_pickle=True).item()
+                min_len = min(len(demo['pcds']), len(demo['T_w_es']), len(demo['grips']))
+                demo['pcds'] = list(demo['pcds'][:min_len])
+                demo['T_w_es'] = list(demo['T_w_es'][:min_len])
+                demo['grips'] = list(demo['grips'][:min_len])
+                loaded_demos.append(sample_to_cond_demo(demo, num_traj_wp))
+            debug_demo_source = debug_demo_dir
+        else:
+            debug_demo_path = os.path.join(args.debug_data_dir, 'full_sample_demos.npy')
+            loaded_demos = list(np.load(debug_demo_path, allow_pickle=True))
+            debug_demo_source = debug_demo_path
 
-    full_sample = {
-        'demos': demos_processed,
-        'live':  {},
-    }
+        full_sample = {
+            'demos': loaded_demos,
+            'live':  {},
+        }
+        num_demos = len(loaded_demos)
+        model.set_num_demos(num_demos)
+        print(f'[DEBUG] Loaded {num_demos} demos from {debug_demo_source}')
+
+        # Count available live steps
+        debug_live_dir = os.path.join(args.debug_data_dir, 'live')
+        debug_live_steps = sorted([
+            f for f in os.listdir(debug_live_dir)
+            if f.startswith('step_') and f.endswith('.npy')
+        ])
+        max_execution_steps = len(debug_live_steps)
+        print(f'[DEBUG] Found {max_execution_steps} live steps in {debug_live_dir}')
+
+        # Prepare debug output directory
+        debug_output_dir = os.path.join(data_dir, 'live(mujoco)')
+        os.makedirs(debug_output_dir, exist_ok=True)
+    else:
+        demos_processed = []
+        for demo_idx in range(num_demos):
+            demo, demo_path, min_len = load_raw_demo(args.object, demo_idx)
+
+            demos_processed.append(sample_to_cond_demo(demo, num_traj_wp))
+            print(f'Loaded demo {demo_idx} ({min_len} frames) from {demo_path}')
+
+        full_sample = {
+            'demos': demos_processed,
+            'live':  {},
+        }
+
     assert len(full_sample['demos'][0]['obs']) == num_traj_wp
 
     ############################################################################
-    # Initialise MuJoCo environment
-    env = MujocoEnv(args.object)
-    env.launch_viewer()
+    # Initialise MuJoCo environment (skip in debug mode)
+    if not args.debug:
+        env = MujocoEnv(args.object)
+        env.launch_viewer()
 
-    # Cache static camera intrinsics / extrinsics (cameras don't move)
-    cam_names  = env.cam_names
-    cam_params = {c: env.get_camera_params(c) for c in cam_names}
+        # Cache static camera intrinsics / extrinsics (cameras don't move)
+        cam_names  = env.cam_names
+        cam_params = {c: env.get_camera_params(c) for c in cam_names}
 
-    # How many simulation substeps to take per action to approximate FPS
-    dt = 1.0 / FPS
-    sim_steps_per_action = max(1, int(dt / env.model.opt.timestep / args.execution_horizon))
+        # How many simulation substeps to take per action to approximate FPS
+        dt = 1.0 / FPS
+        sim_steps_per_action = max(1, int(dt / env.model.opt.timestep / args.execution_horizon))
 
-    ############################################################################
-    # Load SAM2
-    print('Loading SAM2...')
-    # Image predictor: used only for the interactive first-frame mask preview UI
-    image_predictor = SAM2ImagePredictor(
-        build_sam2(args.sam2_config, args.sam2_ckpt, device=device)
-    )
-    # Video predictor: used for memory-bank-based online tracking every step
-    video_predictor = build_sam2_video_predictor(
-        args.sam2_config, args.sam2_ckpt, device=device,
-    )
-    trackers = {c: OnlineSAM2Tracker(video_predictor) for c in cam_names}
-    print('SAM2 loaded.')
+        ########################################################################
+        # Load SAM2
+        print('Loading SAM2...')
+        # Image predictor: used only for the interactive first-frame mask preview UI
+        image_predictor = SAM2ImagePredictor(
+            build_sam2(args.sam2_config, args.sam2_ckpt, device=device)
+        )
+        # Video predictor: used for memory-bank-based online tracking every step
+        video_predictor = build_sam2_video_predictor(
+            args.sam2_config, args.sam2_ckpt, device=device,
+        )
+        trackers = {c: OnlineSAM2Tracker(video_predictor) for c in cam_names}
+        print('SAM2 loaded.')
 
     ############################################################################
     # Rollout loop
-    # Create folder for saving deployed EE poses
-    ee_pose_deploy_dir = os.path.join(data_dir, 'EE_pose(deploy)')
-    os.makedirs(ee_pose_deploy_dir, exist_ok=True)
-    ee_pose_counter = 0
+    if args.debug:
+        # ── DEBUG MODE: replay saved CoppeliaSim live data ──────────────────
+        print(f'\n[DEBUG] Starting replay of {max_execution_steps} steps...')
+        for k in range(max_execution_steps):
+            step_path = os.path.join(debug_live_dir, f'step_{k:03d}.npy')
+            step_data = np.load(step_path, allow_pickle=True).item()
 
-    points_per_cam  = {}
-    labels_per_cam  = {}
-    initialized_cam = {c: False for c in cam_names}
+            pcd_ee = step_data['pcd_ee']
+            T_w_e = step_data['T_w_e']            # already in MuJoCo world frame
+            grip = step_data['grip']
 
-    for k in range(max_execution_steps):
-        if not env.viewer_is_running():
-            print('Viewer closed — stopping.')
-            break
+            # Diagnostic prints
+            print(f'  [step {k:3d}] PCD bounds: '
+                  f'min={pcd_ee.min(axis=0)}, max={pcd_ee.max(axis=0)}, '
+                  f'npts={len(pcd_ee)}, T_w_e pos={T_w_e[:3,3]}, grip={grip}')
 
-        t_loop_start = time.time()
+            # Run model inference with loaded data
+            full_sample['live'] = {
+                'obs':    [pcd_ee],
+                'grips':  [grip],
+                'T_w_es': [T_w_e],
+            }
+            actions, pred_grips = model.predict_actions(full_sample)
 
-        # ── Step 0 only: interactive keypoint selection ─────────────────────
-        if k == 0:
-            for cam in cam_names:
-                rgb, _ = env.render_rgbd(cam)
-                print(f'\n[{cam}] Select object keypoints.')
-                pts, lbs = interactive_mask_selection(rgb, image_predictor, cam)
-                points_per_cam[cam] = pts
-                labels_per_cam[cam] = lbs
-                print(f'[{cam}] {len(pts)} keypoint(s) confirmed.')
+            # Save debug output for comparison
+            np.save(os.path.join(debug_output_dir, f'step_{k:03d}.npy'), {
+                'pcd_ee': pcd_ee,
+                'T_w_e': T_w_e.copy(),
+                'grip': grip,
+                'actions': actions.copy(),
+                'pred_grips': pred_grips.copy(),
+                'actions_cs': step_data['actions'],       # original CoppeliaSim predictions
+                'pred_grips_cs': step_data['pred_grips'], # original CoppeliaSim predictions
+            }, allow_pickle=True)
 
-        # ── Observe current robot state ──────────────────────────────────────
-        t0 = time.time()
-        T_w_e = env.get_ee_pose()       # (4, 4) SE3, world frame
-        grip  = env.get_gripper_state() # 0=closed, 1=open
-        t_state = time.time() - t0
+            print(f'  [step {k:3d}] pred_grips: {pred_grips.flatten()}')
+            print(f'  [step {k:3d}] pred_grips_cs: {step_data["pred_grips"].flatten()}')
 
-        pcd_list = []
-        t_render_total = 0.0
-        t_sam2_total = 0.0
-        t_pcd_total = 0.0
-        for cam in cam_names:
-            t0 = time.time()
-            rgb, depth = env.render_rgbd(cam)
-            t_render_total += time.time() - t0
+        print(f'\n[DEBUG] Replay finished. Debug outputs saved to {debug_output_dir}')
+        print(f'[DEBUG] Compare with: {debug_live_dir}')
 
-            intrinsic, extrinsic = cam_params[cam]
-            fx, fy = intrinsic[0, 0], intrinsic[1, 1]
-            cx, cy = intrinsic[0, 2], intrinsic[1, 2]
+    else:
+        # ── NORMAL MODE: live SAM2 tracking + MuJoCo execution ──────────────
+        live_writer = LiveRolloutWriter(args.object)
+        ee_pose_deploy_dir = None
+        if not live_writer.enabled:
+            ee_pose_deploy_dir = get_live_pose_dir(args.object)
+            os.makedirs(ee_pose_deploy_dir, exist_ok=True)
+        ee_pose_counter = 0
 
-            t0 = time.time()
-            if not initialized_cam[cam]:
-                # First frame: seed video predictor with keypoints → builds memory bank
-                mask = trackers[cam].initialize(
-                    rgb, points_per_cam[cam], labels_per_cam[cam]
-                )
-                initialized_cam[cam] = True
-            else:
-                # Subsequent frames: memory-bank-guided tracking, no keypoints needed
-                mask = trackers[cam].update(rgb)
-            t_sam2_total += time.time() - t0
+        points_per_cam  = {}
+        labels_per_cam  = {}
+        initialized_cam = {c: False for c in cam_names}
 
-            if mask is None or mask.sum() == 0:
-                continue  # empty mask → skip this camera, robot holds last command
-
-            t0 = time.time()
-            depth_masked = depth * mask.astype(np.float32)
-            pcd_cam = depth_to_pointcloud(depth_masked, fx, fy, cx, cy)
-            if len(pcd_cam) == 0:
-                t_pcd_total += time.time() - t0
-                continue
-            pcd_list.append(camera_pcd_to_world(pcd_cam, extrinsic))
-            t_pcd_total += time.time() - t0
-
-        if not pcd_list:
-            print(f'[step {k}] No valid pointcloud — skipping inference.')
-            env.sync_viewer()
-            continue
-
-        pcd_w = np.concatenate(pcd_list, axis=0)
-
-        # Transform from world frame to EE (gripper_tcp) frame
-        pcd_ee = transform_pcd(pcd_w, np.linalg.inv(T_w_e))
-
-        # ── Model inference ──────────────────────────────────────────────────
-        t0 = time.time()
-        full_sample['live'] = {
-            'obs':    [subsample_pcd(pcd_ee)],
-            'grips':  [grip],
-            'T_w_es': [T_w_e],
-        }
-        actions, pred_grips = model.predict_actions(full_sample)
-        print(f"Predicted gripps; {pred_grips.flatten()}")
-        t_inference = time.time() - t0
-        # actions:    (pred_horizon, 4, 4) relative EE transforms
-        # pred_grips: (pred_horizon, 1)   -1=close, +1=open
-
-        # ── Execute actions ──────────────────────────────────────────────────
-        t0 = time.time()
-        prev_grip_binary = grip
-        actions_executed = 0
-        for j in range(args.execution_horizon):
-            T_w_e_next  = T_w_e @ actions[j]
-            pose_7d     = transform_to_pose(T_w_e_next)  # [x,y,z, qx,qy,qz,qw]
-            grip_binary = int((pred_grips[j] + 1) / 2 > 0.5)
-
-            # Save T_w_e_next to EE_pose(deploy) folder
-            np.save(os.path.join(ee_pose_deploy_dir, f'{ee_pose_counter:04d}.npy'), T_w_e_next)
-            ee_pose_counter += 1
-
-            env.set_target(pose_7d[:3], pose_7d[3:], grip_binary * 255)
-            env.step(n_substeps=sim_steps_per_action)
-            env.sync_viewer()
-            actions_executed += 1
-
-            # Re-observe immediately when gripper state changes to avoid
-            # open/close oscillation (CLAUDE.md performance tip)
-            if grip_binary != prev_grip_binary:
+        for k in range(max_execution_steps):
+            if not env.viewer_is_running():
+                print('Viewer closed — stopping.')
                 break
-            prev_grip_binary = grip_binary
-        t_execution = time.time() - t0
 
-        # ── Maintain target FPS ──────────────────────────────────────────────
-        elapsed = time.time() - t_loop_start
-        sleep_time = max(0.0, dt - elapsed)
-        time.sleep(sleep_time)
+            t_loop_start = time.time()
 
-        # ── Timing log ───────────────────────────────────────────────────────
-        print(f'[step {k:3d}] '
-              f'total={elapsed*1000:6.1f}ms | '
-              f'state={t_state*1000:5.1f}ms | '
-              f'render={t_render_total*1000:5.1f}ms | '
-              f'sam2={t_sam2_total*1000:6.1f}ms | '
-              f'pcd={t_pcd_total*1000:5.1f}ms | '
-              f'inference={t_inference*1000:6.1f}ms | '
-              f'exec={t_execution*1000:5.1f}ms({actions_executed}acts) | '
-              f'sleep={sleep_time*1000:5.1f}ms')
+            # ── Step 0 only: interactive keypoint selection ─────────────────
+            if k == 0:
+                for cam in cam_names:
+                    rgb, _ = env.render_rgbd(cam)
+                    print(f'\n[{cam}] Select object keypoints.')
+                    pts, lbs = interactive_mask_selection(rgb, image_predictor, cam)
+                    points_per_cam[cam] = pts
+                    labels_per_cam[cam] = lbs
+                    print(f'[{cam}] {len(pts)} keypoint(s) confirmed.')
 
-    env.close()
+            # ── Observe current robot state ─────────────────────────────────
+            t0 = time.time()
+            T_w_e = env.get_ee_pose()       # (4, 4) SE3, world frame
+            grip  = env.get_gripper_state() # 0=closed, 1=open
+            t_state = time.time() - t0
+
+            def track_mask(cam_name, rgb, _depth):
+                if not initialized_cam[cam_name]:
+                    # First frame: seed video predictor with keypoints
+                    mask = trackers[cam_name].initialize(
+                        rgb, points_per_cam[cam_name], labels_per_cam[cam_name]
+                    )
+                    initialized_cam[cam_name] = True
+                    return mask
+
+                # Subsequent frames: memory-bank-guided tracking
+                return trackers[cam_name].update(rgb)
+
+            pcd_w, pcd_stats = env.get_segmented_pcd(
+                track_mask,
+                cam_names=cam_names,
+                cam_params=cam_params,
+                return_stats=True,
+            )
+            t_render_total = pcd_stats['render']
+            t_sam2_total = pcd_stats['mask']
+            t_pcd_total = pcd_stats['pcd']
+
+            if pcd_w is None:
+                print(f'[step {k}] No valid pointcloud — skipping inference.')
+                env.sync_viewer()
+                continue
+
+            # Transform from world frame to EE (gripper_tcp) frame
+            pcd_ee = transform_pcd(pcd_w, np.linalg.inv(T_w_e))
+
+            # ── Model inference ─────────────────────────────────────────────
+            t0 = time.time()
+            live_obs = subsample_pcd(pcd_ee)
+            full_sample['live'] = {
+                'obs':    [live_obs],
+                'grips':  [grip],
+                'T_w_es': [T_w_e],
+            }
+            actions, pred_grips = model.predict_actions(full_sample)
+            live_writer.save_step(
+                k,
+                live_obs,
+                T_w_e,
+                grip,
+                actions,
+                pred_grips,
+                seg_pcd_full=pcd_ee,
+            )
+            print(f"Predicted gripps; {pred_grips.flatten()}")
+            t_inference = time.time() - t0
+
+            # ── Execute actions ─────────────────────────────────────────────
+            t0 = time.time()
+            actions_executed = 0
+            for j in range(args.execution_horizon):
+                T_w_e_next = T_w_e @ actions[j]
+                pose_7d    = transform_to_pose(T_w_e_next)
+                grip_binary = int((pred_grips[j] + 1) / 2 > 0.5)
+
+                if live_writer.enabled:
+                    live_writer.append_execution(T_w_e_next, grip_binary)
+                else:
+                    np.save(os.path.join(ee_pose_deploy_dir, f'{ee_pose_counter:04d}.npy'), T_w_e_next)
+                    ee_pose_counter += 1
+
+                env.set_target(pose_7d[:3], pose_7d[3:], grip_binary * 255)
+                env.step(n_substeps=sim_steps_per_action)
+                env.sync_viewer()
+                actions_executed += 1
+            t_execution = time.time() - t0
+
+            # ── Maintain target FPS ─────────────────────────────────────────
+            elapsed = time.time() - t_loop_start
+            sleep_time = max(0.0, dt - elapsed)
+            time.sleep(sleep_time)
+
+            # ── Timing log ──────────────────────────────────────────────────
+            print(f'[step {k:3d}] '
+                  f'total={elapsed*1000:6.1f}ms | '
+                  f'state={t_state*1000:5.1f}ms | '
+                  f'render={t_render_total*1000:5.1f}ms | '
+                  f'sam2={t_sam2_total*1000:6.1f}ms | '
+                  f'pcd={t_pcd_total*1000:5.1f}ms | '
+                  f'inference={t_inference*1000:6.1f}ms | '
+                  f'exec={t_execution*1000:5.1f}ms({actions_executed}acts) | '
+                  f'sleep={sleep_time*1000:5.1f}ms')
+
+        env.close()
     print('Deployment finished.')

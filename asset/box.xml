@@ -47,8 +47,8 @@
 
     <site name="cam_target" pos="0.25 0.25 0.22" size="0.001" rgba="0 0 0 0"/>
 
-    <camera name="cam_left" pos="0.15 -1.2304 1.1" xyaxes="0.9977 -0.0674 0 0.0344 0.5089 0.8601" fovy="45"/>
-    <camera name="cam_right" pos="0.15 1.7304 1.1" xyaxes="-0.9977 -0.0674 0 0.0344 -0.5089 0.8601" fovy="45"/>
+    <camera name="cam_left" pos="0.17 -0.93432 0.924" xyaxes="0.9977 -0.0674 0 0.0344 0.5089 0.8601" fovy="45"/>
+    <camera name="cam_right" pos="0.17 1.43432 0.924" xyaxes="-0.9977 -0.0674 0 0.0344 -0.5089 0.8601" fovy="45"/>
     <camera name="cam_front" pos="1.5426 0.25 1.1" xyaxes="0 1 0 -0.5627 0 0.8266" fovy="45"/>
   </worldbody>
 

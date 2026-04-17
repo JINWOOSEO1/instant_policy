@@ -19,6 +19,12 @@ import numpy as np
 import torch
 from PIL import Image
 
+from mujoco_scripts.camera_utils import load_camera_entries
+from mujoco_scripts.result_paths import (
+    get_demo_mask_dir,
+    get_object_root,
+    resolve_demo_rgbd_dir,
+)
 from sam2_repo.sam2.build_sam import build_sam2, build_sam2_video_predictor
 from sam2_repo.sam2.sam2_image_predictor import SAM2ImagePredictor
 
@@ -36,6 +42,14 @@ if hasattr(inductor_cfg, "fx_graph_remote_cache"):
     inductor_cfg.fx_graph_remote_cache = False # local-only cache
 
 
+def show_fixed_window(window_name, image_bgr):
+    """Show an image in a resizable OpenCV window with a fixed pixel size."""
+    height, width = image_bgr.shape[:2]
+    cv2.namedWindow(window_name, cv2.WINDOW_NORMAL | cv2.WINDOW_KEEPRATIO)
+    cv2.resizeWindow(window_name, width, height)
+    cv2.imshow(window_name, image_bgr)
+
+
 def sam2_cuda_extension_available():
     """Return whether the optional SAM2 CUDA extension is importable."""
     try:
@@ -48,14 +62,18 @@ def sam2_cuda_extension_available():
 class KeypointSelector:
     """Interactive OpenCV keypoint selection."""
 
-    def __init__(self, window_name='Select Keypoints'):
+    def __init__(self, window_name='Select Keypoints', display_scale=3):
         self.window_name = window_name
+        self.display_scale = display_scale
         self.points = []
         self.labels = []  # 1 = foreground, 0 = background
         self.image = None
         self.display = None
 
     def mouse_callback(self, event, x, y, flags, param):
+        x = min(x // self.display_scale, self.image.shape[1] - 1)
+        y = min(y // self.display_scale, self.image.shape[0] - 1)
+
         if event == cv2.EVENT_LBUTTONDOWN:
             # Left click = positive point (foreground)
             self.points.append([x, y])
@@ -73,7 +91,16 @@ class KeypointSelector:
             color = (0, 255, 0) if label == 1 else (0, 0, 255)
             cv2.circle(self.display, (x, y), 5, color, -1)
             cv2.circle(self.display, (x, y), 7, color, 2)
-        cv2.imshow(self.window_name, self.display)
+        show_fixed_window(self.window_name, self._get_scaled_display())
+
+    def _get_scaled_display(self):
+        return cv2.resize(
+            self.display,
+            None,
+            fx=self.display_scale,
+            fy=self.display_scale,
+            interpolation=cv2.INTER_NEAREST,
+        )
 
     def select(self, image_rgb):
         """Show image, let user click points. Press 't' to confirm, 'r' to reset."""
@@ -82,7 +109,7 @@ class KeypointSelector:
         self.points = []
         self.labels = []
 
-        cv2.imshow(self.window_name, self.display)
+        show_fixed_window(self.window_name, self._get_scaled_display())
         cv2.setMouseCallback(self.window_name, self.mouse_callback)
 
         print(f"  Left-click: foreground point | Right-click: background point")
@@ -96,19 +123,26 @@ class KeypointSelector:
                 self.points = []
                 self.labels = []
                 self.display = self.image.copy()
-                cv2.imshow(self.window_name, self.display)
+                show_fixed_window(self.window_name, self._get_scaled_display())
                 print("  Points reset. Click again.")
 
         return np.array(self.points), np.array(self.labels)
 
 
-def show_mask_overlay(image_rgb, mask, window_name='Mask Preview'):
+def show_mask_overlay(image_rgb, mask, window_name='Mask Preview', display_scale=3):
     """Show mask overlaid on image."""
     mask = mask.astype(bool)
     overlay = image_rgb.copy()
     overlay[mask] = overlay[mask] * 0.5 + np.array([0, 255, 0]) * 0.5
     display = cv2.cvtColor(overlay.astype(np.uint8), cv2.COLOR_RGB2BGR)
-    cv2.imshow(window_name, display)
+    display = cv2.resize(
+        display,
+        None,
+        fx=display_scale,
+        fy=display_scale,
+        interpolation=cv2.INTER_NEAREST,
+    )
+    show_fixed_window(window_name, display)
 
 
 def interactive_mask_selection(image_rgb, predictor, cam_label):
@@ -173,15 +207,16 @@ def track_masks_with_video_predictor(video_predictor, jpg_dir, points, labels, n
 def main():
     parser = argparse.ArgumentParser(description='Generate segmentation masks using SAM2')
     parser.add_argument('--object', type=str, default='mug', help='Object name')
+    parser.add_argument('--demo_index', type=int, default=0, help='Demo index to process')
     parser.add_argument('--sam2_config', type=str, default='configs/sam2.1/sam2.1_hiera_s.yaml',
                         help='SAM2 config file (relative to sam2 package)')
     parser.add_argument('--sam2_ckpt', type=str, default='sam2_repo/checkpoints/sam2.1_hiera_small.pt',
                         help='SAM2 checkpoint path')
     args = parser.parse_args()
 
-    data_dir = f'results/{args.object}'
-    rgbd_dir = os.path.join(data_dir, 'RGBD_images')
-    mask_dir = os.path.join(data_dir, 'mask')
+    object_root = get_object_root(args.object)
+    rgbd_dir = resolve_demo_rgbd_dir(args.object, args.demo_index)
+    mask_dir = get_demo_mask_dir(args.object, args.demo_index)
     os.makedirs(mask_dir, exist_ok=True)
 
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -207,16 +242,23 @@ def main():
     )
     image_predictor = SAM2ImagePredictor(sam2_model)
 
+    camera_entries = load_camera_entries(object_root, rgbd_dir=rgbd_dir)
+    if not camera_entries:
+        print(f'No camera metadata found in {object_root}')
+        return
+
     # Process each camera
     cam_points = {}
     cam_labels = {}
 
-    for cam_idx in range(3):
-        cam_label = f'cam{cam_idx}'
+    for camera in camera_entries:
+        cam_idx = camera['index']
+        cam_dir_name = camera['dir']
+        cam_label = f'{cam_dir_name} ({camera["name"]})'
         print(f'\n--- {cam_label} ---')
 
         # Load first frame
-        cam_dir = os.path.join(rgbd_dir, f'cam{cam_idx}')
+        cam_dir = os.path.join(rgbd_dir, cam_dir_name)
         first_frame_path = os.path.join(cam_dir, '0000.jpg')
         if not os.path.exists(first_frame_path):
             print(f'  First frame not found: {first_frame_path}')
@@ -240,15 +282,17 @@ def main():
         vos_optimized=False,
     )
 
-    for cam_idx in range(3):
+    for camera in camera_entries:
+        cam_idx = camera['index']
         if cam_idx not in cam_points:
             continue
 
-        cam_label = f'cam{cam_idx}'
+        cam_dir_name = camera['dir']
+        cam_label = f'{cam_dir_name} ({camera["name"]})'
         print(f'\n--- Tracking {cam_label} ---')
 
         # Use camera subdirectory directly (already contains JPEGs)
-        cam_dir = os.path.join(rgbd_dir, f'cam{cam_idx}')
+        cam_dir = os.path.join(rgbd_dir, cam_dir_name)
         jpg_files = sorted(glob.glob(os.path.join(cam_dir, '*.jpg')))
         num_frames = len(jpg_files)
 
@@ -266,7 +310,7 @@ def main():
 
         # Save masks
         for frame_idx, mask in masks.items():
-            mask_path = os.path.join(mask_dir, f'{cam_label}_{frame_idx:04d}_mask.npy')
+            mask_path = os.path.join(mask_dir, f'{cam_dir_name}_{frame_idx:04d}_mask.npy')
             np.save(mask_path, mask)
 
         print(f'  Saved {len(masks)} masks to {mask_dir}/')

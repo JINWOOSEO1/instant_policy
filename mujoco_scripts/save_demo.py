@@ -11,6 +11,18 @@ import os
 
 import numpy as np
 
+from mujoco_scripts.camera_utils import load_camera_entries
+from mujoco_scripts.result_paths import (
+    get_camera_params_path,
+    get_demo_dir,
+    get_demo_file_path,
+    get_object_root,
+    resolve_demo_gripper_state_path,
+    resolve_demo_pose_dir,
+    resolve_demo_rgbd_dir,
+    resolve_demo_seg_pcd_dir,
+)
+
 
 def main():
     parser = argparse.ArgumentParser(description='Save consolidated demo file')
@@ -18,18 +30,42 @@ def main():
     parser.add_argument('--demo_index', type=int, required=True)
     args = parser.parse_args()
 
-    data_dir = f'results/{args.object}'
-    seg_pcd_dir = os.path.join(data_dir, 'seg_pcd')
-    ee_pose_dir = os.path.join(data_dir, 'EE_pose')
+    object_root = get_object_root(args.object)
+    seg_pcd_dir = resolve_demo_seg_pcd_dir(args.object, args.demo_index)
+    pose_dir = resolve_demo_pose_dir(args.object, args.demo_index)
+    rgbd_dir = resolve_demo_rgbd_dir(args.object, args.demo_index)
+    gripper_state_path = resolve_demo_gripper_state_path(args.object, args.demo_index)
 
     num_frames = len([f for f in os.listdir(seg_pcd_dir) if f.endswith('.npy')])
     pcds = [np.load(os.path.join(seg_pcd_dir, f'{i:04d}.npy')) for i in range(num_frames)]
-    T_w_es = [np.load(os.path.join(ee_pose_dir, f'{i:04d}.npy')) for i in range(num_frames)]
-    grips = list(np.load(os.path.join(data_dir, 'gripper_state.npy')))
+    T_w_es = [np.load(os.path.join(pose_dir, f'{i:04d}.npy')) for i in range(num_frames)]
+    grips = list(np.load(gripper_state_path))
+    camera_entries = load_camera_entries(object_root, rgbd_dir=rgbd_dir)
 
-    demo = {'pcds': pcds, 'T_w_es': T_w_es, 'grips': grips}
+    demo = {
+        'pcds': pcds,
+        'T_w_es': T_w_es,
+        'grips': grips,
+        'camera_names': [camera['name'] for camera in camera_entries],
+        'camera_dirs': [camera['dir'] for camera in camera_entries],
+    }
 
-    out_path = os.path.join(data_dir, f'demo_{args.demo_index}.npy')
+    cam_params_path = get_camera_params_path(args.object)
+    if os.path.exists(cam_params_path):
+        with np.load(cam_params_path, allow_pickle=True) as cam_params:
+            demo['camera_params'] = {
+                camera['dir']: {
+                    'name': camera['name'],
+                    'intrinsic': cam_params[f'cam{camera["index"]}_intrinsic'],
+                    'extrinsic': cam_params[f'cam{camera["index"]}_extrinsic'],
+                }
+                for camera in camera_entries
+                if f'cam{camera["index"]}_intrinsic' in cam_params.files
+                and f'cam{camera["index"]}_extrinsic' in cam_params.files
+            }
+
+    out_path = get_demo_file_path(args.object, args.demo_index)
+    os.makedirs(get_demo_dir(args.object, args.demo_index), exist_ok=True)
     np.save(out_path, demo, allow_pickle=True)
     print(f'Saved demo {args.demo_index} ({num_frames} frames) to {out_path}')
 
