@@ -24,8 +24,15 @@
     <geom name="floor" size="0 0 0.05" type="plane" material="groundplane"/>
 
     <!-- Table -->
-    <body name="table" pos="0.45 0.25 0.1">
-      <geom name="table_top" type="box" size="0.4 0.5 0.02" pos="0 0 0.1" material="table_mat"/>
+    <body name="table" pos="0.45 0.00 0.1">
+      <geom
+        name="table_top"
+        type="box"
+        size="0.4 0.6 0.02"
+        pos="0 0 0.1"
+        material="table_mat"
+        friction="3.0 0.05 0.01"
+      />
       <geom name="table_leg1" type="cylinder" size="0.03 0.1" pos="0.35 0.45 0" material="table_mat"/>
       <geom name="table_leg2" type="cylinder" size="0.03 0.1" pos="-0.35 0.45 0" material="table_mat"/>
       <geom name="table_leg3" type="cylinder" size="0.03 0.1" pos="0.35 -0.45 0" material="table_mat"/>
@@ -33,8 +40,8 @@
     </body>
 
     <!-- Mug at (0.5, 0, table_top) = (0.5, 0, 0.22) -->
-    <body name="mug" pos="0.5 0 0.22">
-      <freejoint name="mug_joint"/>
+    <body name="source_object" pos="0.5 -0.2 0.22" euler="0 0 -1.0472">
+      <freejoint name="source_object_joint"/>
       <inertial mass="0.6" pos="0 0 0.08" diaginertia="0.0024 0.0024 0.0016"/>
       <!-- Mug bottom: disk (2x scaled) -->
       <geom name="mug_bottom" type="cylinder" size="0.07 0.004" pos="0 0 0.004" material="mug_mat"/>
@@ -59,8 +66,15 @@
     </body>
 
     <!-- Mug rack at (0.5, 0.5, table_top) = (0.5, 0.5, 0.22) -->
-    <body name="mug_rack" pos="0.5 0.5 0.22" euler="0 0 1.571">
-      <geom name="rack_base" type="cylinder" size="0.11 0.014" pos="0 0 0.014" material="mat_wood"/>
+    <body name="target_object" pos="0.5 0.2 0.22" euler="0 0 1.571">
+      <geom
+        name="rack_base"
+        type="cylinder"
+        size="0.11 0.014"
+        pos="0 0 0.014"
+        material="mat_wood"
+        friction="3.0 0.05 0.01"
+      />
       <geom name="rack_post" type="cylinder" size="0.02 0.20" pos="0 0 0.216" material="mat_wood"/>
       <geom name="rack_branch_top_1" type="capsule" size="0.008 0.054" pos="0.027 0 0.338" euler="0 70 0" material="mat_wood"/>
       <geom name="rack_branch_top_2" type="capsule" size="0.008 0.054" pos="-0.027 0 0.338" euler="0 -70 0" material="mat_wood"/>
@@ -74,6 +88,9 @@
     <!-- Left camera (negative Y side when looking along +x) -->
     <camera name="cam_left" pos="0.17 -0.93432 0.924" xyaxes="0.9977 -0.0674 0 0.0344 0.5089 0.8601" fovy="45"/>
 
+    <!-- Preview camera near cam_left for high-resolution teleop monitoring -->
+    <camera name="cam_preview" pos="0.22 -0.82 0.99" xyaxes="0.9977 -0.0674 0 0.0344 0.5089 0.8601" fovy="40"/>
+
     <!-- Right camera (positive Y side) -->
     <camera name="cam_right" pos="0.17 1.43432 0.924" xyaxes="-0.9977 -0.0674 0 0.0344 -0.5089 0.8601" fovy="45"/>
 
@@ -84,7 +101,7 @@
 
   <keyframe>
     <key name="scene_home"
-         qpos="0 0 0 -1.57079 0 1.57079 0.7853 0.04 0.04 0.5 0 0.22 1 0 0 0"
+         qpos="0 0 0 -1.57079 0 1.57079 0.7853 0.04 0.04 0.5 -0.2 0.22 0.8660 0 0 -0.5"
          ctrl="0 0 0 -1.57079 0 1.57079 0.7853 255"/>
   </keyframe>
 </mujoco>

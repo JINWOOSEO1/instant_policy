@@ -21,6 +21,12 @@ from mujoco_scripts.camera_utils import (
 )
 
 
+SCENE_NOISE_STD = 0.04
+SCENE_NOISE_CLIP = 0.1
+MIN_OBJECT_CENTER_DISTANCE = 0.1
+SCENE_MAX_RESAMPLES = 100
+
+
 # ─── Utility functions ───────────────────────────────────────────────────────
 
 def scipy_quat_to_mujoco(quat_xyzw):
@@ -86,6 +92,14 @@ class MujocoEnv:
         scene_xml = f'asset/{object_name}.xml'
         self.model = mujoco.MjModel.from_xml_path(scene_xml)
         self.data = mujoco.MjData(self.model)
+        self.target_object_body_id = mujoco.mj_name2id(
+            self.model,
+            mujoco.mjtObj.mjOBJ_BODY,
+            'target_object',
+        )
+        self.target_object_base_pos = None
+        if self.target_object_body_id != -1:
+            self.target_object_base_pos = self.model.body_pos[self.target_object_body_id].copy()
 
         # End-effector references
         self.hand_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, 'hand')
@@ -116,13 +130,54 @@ class MujocoEnv:
         """Reset environment to the scene_home keyframe."""
         key_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_KEY, 'scene_home')
         mujoco.mj_resetDataKeyframe(self.model, self.data, key_id)
-        mujoco.mj_forward(self.model, self.data)
+        self.randomize_scene()
 
         # Initialize IK target to current TCP pose
         self.target_pos = self.data.site_xpos[self.ee_site_id].copy()
         ee_mat = self.data.site_xmat[self.ee_site_id].reshape(3, 3)
         self.target_quat = scipy_quat_to_mujoco(R.from_matrix(ee_mat).as_quat())
         self.gripper_val = float(self.data.ctrl[7])
+
+    def randomize_scene(self):
+        """Apply per-reset scene randomization while preserving XML orientations."""
+        source_joint_id = mujoco.mj_name2id(
+            self.model,
+            mujoco.mjtObj.mjOBJ_JOINT,
+            'source_object_joint',
+        )
+
+        if source_joint_id == -1 or self.target_object_body_id == -1 or self.target_object_base_pos is None:
+            mujoco.mj_forward(self.model, self.data)
+            return
+
+        source_qpos_adr = self.model.jnt_qposadr[source_joint_id]
+        source_base_pos = self.data.qpos[source_qpos_adr:source_qpos_adr + 3].copy()
+        self.model.body_pos[self.target_object_body_id] = self.target_object_base_pos
+        target_base_xy = self.target_object_base_pos[:2].copy()
+
+        for _ in range(SCENE_MAX_RESAMPLES):
+            source_noise = np.clip(
+                np.random.normal(loc=0.0, scale=SCENE_NOISE_STD, size=2),
+                -SCENE_NOISE_CLIP,
+                SCENE_NOISE_CLIP,
+            )
+            target_noise = np.clip(
+                np.random.normal(loc=0.0, scale=SCENE_NOISE_STD, size=2),
+                -SCENE_NOISE_CLIP,
+                SCENE_NOISE_CLIP,
+            )
+
+            source_xy = source_base_pos[:2] + source_noise
+            target_xy = target_base_xy + target_noise
+            if np.linalg.norm(source_xy - target_xy) >= MIN_OBJECT_CENTER_DISTANCE:
+                self.data.qpos[source_qpos_adr:source_qpos_adr + 2] = source_xy
+                self.model.body_pos[self.target_object_body_id, :2] = target_xy
+                mujoco.mj_forward(self.model, self.data)
+                return
+
+        raise RuntimeError(
+            'Failed to sample a valid randomized scene with sufficient object separation'
+        )
 
 
     # ── Observation ──────────────────────────────────────────────────────

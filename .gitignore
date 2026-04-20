@@ -20,3 +20,4 @@ results/
 # Simulation
 RLBench/
 PyRep/
+MUJOCO_LOG.TXT
