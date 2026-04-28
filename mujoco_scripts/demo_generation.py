@@ -11,7 +11,7 @@ Usage:
     python -m mujoco_scripts.demo_generation --object box --sam2
 
     # Rule-based mug-hanging demo with GT masks
-    python -m mujoco_scripts.demo_generation --object mug 
+    python -m mujoco_scripts.demo_generation --object mug
 
     # Teleop demo with GT masks
     python -m mujoco_scripts.demo_generation --object mug --teleop
@@ -50,6 +50,8 @@ from mujoco_scripts.simulation import MujocoEnv
 
 # ─── Object segmentation config ──────────────────────────────────────────────
 
+MUG_OBJECTS = {'mug', 'mug_1', 'mug_2', 'mug_3', 'mug_4', 'mug_3branch'}
+
 OBJECT_GEOM_NAMES = {
     'mug': [
         # mug body
@@ -61,7 +63,65 @@ OBJECT_GEOM_NAMES = {
         # mug_rack body
         'rack_base', 'rack_post',
         'rack_branch_top_1', 'rack_branch_top_2',
-        'rack_branch_mid_1', 'rack_branch_mid_2',
+        'rack_branch_bottom_1', 'rack_branch_bottom_2',
+    ],
+    'mug_1': [
+        # mug body
+        'mug_bottom',
+        'mug_wall_00', 'mug_wall_01', 'mug_wall_02', 'mug_wall_03',
+        'mug_wall_04', 'mug_wall_05', 'mug_wall_06', 'mug_wall_07',
+        'mug_handle_top', 'mug_handle_upper', 'mug_handle_mid',
+        'mug_handle_lower', 'mug_handle_bot',
+        # mug_rack body
+        'rack_base', 'rack_post',
+        'rack_branch_top_1', 'rack_branch_top_2',
+        'rack_branch_bottom_1', 'rack_branch_bottom_2',
+    ],
+    'mug_2': [
+        # mug body
+        'mug_bottom',
+        'mug_wall_00', 'mug_wall_01', 'mug_wall_02', 'mug_wall_03',
+        'mug_wall_04', 'mug_wall_05', 'mug_wall_06', 'mug_wall_07',
+        'mug_wall_08', 'mug_wall_09', 'mug_wall_10', 'mug_wall_11',
+        'mug_wall_taper_00', 'mug_wall_taper_01', 'mug_wall_taper_02', 'mug_wall_taper_03',
+        'mug_wall_taper_04', 'mug_wall_taper_05', 'mug_wall_taper_06', 'mug_wall_taper_07',
+        'mug_wall_taper_08', 'mug_wall_taper_09', 'mug_wall_taper_10', 'mug_wall_taper_11',
+        'mug_handle_top', 'mug_handle_mid', 'mug_handle_bot', 'mug_handle_low',
+        # mug_rack body
+        'rack_base', 'rack_post',
+        'rack_branch_top_1', 'rack_branch_top_2',
+        'rack_branch_bottom_1', 'rack_branch_bottom_2',
+    ],
+    'mug_3': [
+        # mug body
+        'mug_bottom',
+        'mug_wall_00', 'mug_wall_01', 'mug_wall_02', 'mug_wall_03',
+        'mug_handle_top', 'mug_handle_mid', 'mug_handle_bot', 'mug_handle_low',
+        # mug_rack body
+        'rack_base', 'rack_post',
+        'rack_branch_top_1', 'rack_branch_top_2',
+        'rack_branch_bottom_1', 'rack_branch_bottom_2',
+    ],
+    'mug_4': [
+        # mug body
+        'mug_bottom',
+        'mug_wall_00', 'mug_wall_01', 'mug_wall_02', 'mug_wall_03',
+        'mug_handle_top', 'mug_handle_mid', 'mug_handle_bot', 'mug_handle_low',
+        # mug_rack body
+        'rack_base', 'rack_post',
+        'rack_branch_top_1', 'rack_branch_top_2',
+        'rack_branch_bottom_1', 'rack_branch_bottom_2',
+    ],
+    'mug_3branch': [
+        # mug body
+        'mug_bottom',
+        'mug_wall_00', 'mug_wall_01', 'mug_wall_02', 'mug_wall_03',
+        'mug_wall_04', 'mug_wall_05', 'mug_wall_06', 'mug_wall_07',
+        'mug_wall_08', 'mug_wall_09', 'mug_wall_10', 'mug_wall_11',
+        'mug_handle_top', 'mug_handle_mid', 'mug_handle_bot', 'mug_handle_low',
+        # mug_rack body
+        'rack_base', 'rack_post',
+        'rack_branch_lower', 'rack_branch_middle', 'rack_branch_upper',
     ],
     'box': [
         # small_box body
@@ -81,6 +141,11 @@ DEFAULT_PREVIEW_DISPLAY_SCALE = 1.5
 RULE_DEMO_FRAME_CAPS = {
     'box': 120,
     'mug': 200,
+    'mug_1': 200,
+    'mug_2': 200,
+    'mug_3': 200,
+    'mug_4': 200,
+    'mug_3branch': 200,
 }
 
 
@@ -262,8 +327,8 @@ class KeypointSelector:
         show_fixed_window(self.window_name, self._get_scaled_display())
         cv2.setMouseCallback(self.window_name, self.mouse_callback)
 
-        print(f"  Left-click: foreground point | Right-click: background point")
-        print(f"  Press 't' to confirm | Press 'r' to reset points")
+        print("  Left-click: foreground point | Right-click: background point")
+        print("  Press 't' to confirm | Press 'r' to reset points")
 
         while True:
             key = cv2.waitKey(0) & 0xFF
@@ -314,7 +379,7 @@ def interactive_mask_selection(image_rgb, predictor, cam_label, return_mask=Fals
         show_mask_overlay(image_rgb, best_mask, window_name=f'{cam_label} - Mask Preview')
 
         print(f"  Mask score: {scores[best_idx]:.3f}")
-        print(f"  Press 't' to accept | Press 'r' to retry with new points")
+        print("  Press 't' to accept | Press 'r' to retry with new points")
 
         while True:
             key = cv2.waitKey(0) & 0xFF
@@ -469,12 +534,12 @@ def collect_rule_demo(args):
     """Collect a demonstration via a built-in rule trajectory."""
     if args.object in ('box'):
         build_rule_trajectory = build_box_rule_trajectory
-    elif args.object == 'mug':
+    elif args.object in MUG_OBJECTS:
         build_rule_trajectory = build_mug_rule_trajectory
     else:
         raise NotImplementedError(
             '--rule is currently implemented only for '
-            f'--object box and --object mug, got "{args.object}"'
+            f'--object box and mug-family objects, got "{args.object}"'
         )
 
     object_root, demo_root, demo_dir, rgbd_dir, pose_dir = prepare_output_dirs(

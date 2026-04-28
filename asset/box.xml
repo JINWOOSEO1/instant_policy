@@ -33,8 +33,8 @@
 
     <body name="source_object" pos="0.5 -0.2 0.22">
       <freejoint name="source_object_joint"/>
-      <inertial mass="0.2" pos="0 0 0.03" diaginertia="0.00012 0.00012 0.00012"/>
-      <geom name="small_box_geom" type="box" size="0.05 0.02 0.03" pos="0 0 0.03" material="small_box_mat"/>
+      <inertial mass="0.2" pos="0 0 0.01" diaginertia="0.00012 0.00012 0.00012"/>
+      <geom name="small_box_geom" type="box" size="0.05 0.02 0.02" pos="0 0 0.02" material="small_box_mat"/>
     </body>
 
     <body name="target_object" pos="0.5 0.2 0.22" euler="0 0 1.571">

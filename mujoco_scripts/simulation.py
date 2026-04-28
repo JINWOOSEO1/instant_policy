@@ -21,8 +21,8 @@ from mujoco_scripts.camera_utils import (
 )
 
 
-SCENE_NOISE_STD = 0.04
-SCENE_NOISE_CLIP = 0.1
+SCENE_NOISE_STD = 0.02
+SCENE_NOISE_CLIP = 0.03
 MIN_OBJECT_CENTER_DISTANCE = 0.1
 SCENE_MAX_RESAMPLES = 100
 
@@ -161,11 +161,13 @@ class MujocoEnv:
                 -SCENE_NOISE_CLIP,
                 SCENE_NOISE_CLIP,
             )
+            # source_noise = np.zeros(2)
             target_noise = np.clip(
                 np.random.normal(loc=0.0, scale=SCENE_NOISE_STD, size=2),
                 -SCENE_NOISE_CLIP,
                 SCENE_NOISE_CLIP,
             )
+            # target_noise = np.zeros(2)
 
             source_xy = source_base_pos[:2] + source_noise
             target_xy = target_base_xy + target_noise

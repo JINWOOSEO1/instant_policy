@@ -50,6 +50,18 @@ def allocate_segment_frames(total_frames, weights):
     return frames.tolist()
 
 
+def get_first_existing_geom_position(env, candidate_names):
+    """Return the world position of the first geom name that exists in the model."""
+    for name in candidate_names:
+        geom_id = mujoco.mj_name2id(env.model, mujoco.mjtObj.mjOBJ_GEOM, name)
+        if geom_id != -1:
+            return env.data.geom_xpos[geom_id].copy(), name
+
+    raise ValueError(
+        f'None of the candidate geoms exist in the model: {candidate_names}'
+    )
+
+
 def build_box_rule_trajectory(env, total_frames):
     """Build a fixed pick-and-place plan for the current box task."""
     if total_frames < 8:
@@ -67,7 +79,7 @@ def build_box_rule_trajectory(env, total_frames):
     box_half_height = env.model.geom_size[small_box_geom_id][2]
     target_bottom_half_height = env.model.geom_size[target_bottom_geom_id][2]
 
-    pregrasp_pos = small_box_center + np.array([0.0, -0.03, 0.15])
+    pregrasp_pos = small_box_center + np.array([0.0, -0.03, 0.25])
     grasp_pos = small_box_center.copy()
 
     # Tuned for the current asset/box.xml geometry. XY scene randomization
@@ -91,7 +103,7 @@ def build_box_rule_trajectory(env, total_frames):
         ('release_box', insert_pos, insert_pos, 0.0, 255.0),
         ('retreat_up', insert_pos, retreat_pos, 255.0, 255.0),
     ]
-    phase_frames = allocate_segment_frames(total_frames, [20, 10, 10, 15, 20, 10, 10, 5])
+    phase_frames = allocate_segment_frames(total_frames, [30, 20, 10, 15, 30, 10, 10, 5])
 
     trajectory = []
     for (phase_name, start_pos, end_pos, start_grip, end_grip), num_frames in zip(
@@ -124,23 +136,34 @@ def build_mug_rule_trajectory(env, total_frames):
     home_quat = R.from_matrix(ee_pose[:3, :3]).as_quat()
 
     mug_center = env.get_body_position('source_object')
-    target_branch = env.get_geom_position('rack_branch_top_2')
+    target_branch, _ = get_first_existing_geom_position(
+        env,
+        [
+            'rack_branch_middle',
+            'rack_branch_bottom_2',
+            'rack_branch_upper',
+            'rack_branch_top_1',
+            'rack_branch_lower',
+            'rack_branch_bottom_1',
+        ],
+    )
 
     # Grip the mug on the rim edge first, then carry it so the handle lines up
     # with the top rack branch before opening near the very end of the clip.
-    grasp_pos = mug_center + np.array([0.01, -0.06, 0.13])
-    pregrasp_pos = grasp_pos + np.array([0.0, 0.0, 0.10])
+    grasp_pos = mug_center + np.array([0.01, 0.06, 0.12])
+    pregrasp_pos = grasp_pos + np.array([0.0, 0.0, 0.20])
 
     lift_pos = np.array([
-        grasp_pos[0],
+        grasp_pos[0] - 0.02,
         grasp_pos[1],
         max(home_pos[2] - 0.001, grasp_pos[2] + 0.25),
     ])
 
     # This target was tuned against the MuJoCo scene so that, while the rim is
-    # still pinched, the mug handle is already wrapped around rack_branch_top_2.
-    hang_pos = target_branch + np.array([-0.07, -0.133, 0.077])
-    approach_branch_pos = hang_pos + np.array([0.0, -0.03, 0.05])
+    # still pinched, the mug handle is already wrapped around the selected rack
+    # branch.
+    hang_pos = target_branch + np.array([-0.09, 0.0, 0.077])
+    approach_branch_pos = hang_pos + np.array([0.0, -0.04, 0.05])
 
     phase_specs = [
         ('approach_rim', home_pos, pregrasp_pos, 255.0, 255.0),
@@ -153,7 +176,7 @@ def build_mug_rule_trajectory(env, total_frames):
         ('release_mug', hang_pos, hang_pos, 0.0, 255.0),
         ('hold_open_pose', hang_pos, hang_pos, 255.0, 255.0),
     ]
-    phase_frames = allocate_segment_frames(total_frames, [30, 15, 10, 30, 40, 40, 15, 4, 3])
+    phase_frames = allocate_segment_frames(total_frames, [30, 15, 10, 30, 40, 15, 5, 4, 3])
 
     trajectory = []
     for (phase_name, start_pos, end_pos, start_grip, end_grip), num_frames in zip(

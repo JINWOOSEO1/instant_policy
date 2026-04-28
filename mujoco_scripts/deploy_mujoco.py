@@ -367,7 +367,7 @@ def main(argv=None):
 
             grip_val = grip_binary * 255
             env.set_target(pose_next[:3], pose_next[3:], grip_val)
-            env.step(n_substeps=50, converge=True, max_ik_iters=100)
+            env.step(n_substeps=20, converge=True, max_ik_iters=300)
 
             env.sync_viewer()
             actions_executed += 1

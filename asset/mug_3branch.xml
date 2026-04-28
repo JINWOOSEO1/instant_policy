@@ -1,4 +1,4 @@
-<mujoco model="panda_mug_scene">
+<mujoco model="panda_mug_scene_3branch_rack">
   <include file="panda.xml"/>
 
   <option integrator="implicitfast" timestep="0.002"/>
@@ -76,28 +76,13 @@
         friction="3.0 0.05 0.01"
       />
       <geom name="rack_post" type="cylinder" size="0.02 0.20" pos="0 0 0.216" material="mat_wood"/>
-      <geom
-        name="rack_branch_bottom_1"
-        type="capsule"
-        size="0.008"
-        fromto="0 0 0.122 0.102 0 0.190"
-        material="mat_wood"
-      />
-      <geom name="rack_branch_bottom_2" type="capsule" size="0.008 0.108" pos="-0.1 0 0.203" euler="0 -70 0" material="mat_wood"/>
-      <geom
-        name="rack_branch_top_1"
-        type="capsule"
-        size="0.008"
-        fromto="0 0.020 0.280 0 0.094 0.328"
-        material="mat_wood"
-      />
-      <geom
-        name="rack_branch_top_2"
-        type="capsule"
-        size="0.008"
-        fromto="0 -0.020 0.280 0 -0.094 0.328"
-        material="mat_wood"
-      />
+      <!-- Three branches, all aligned to the original rack_branch_bottom_2 direction. -->
+      <!-- <geom name="rack_branch_lower" type="capsule" size="0.008 0.108" pos="-0.1 0 0.159" euler="0 -70 0" material="mat_wood"/>
+      <geom name="rack_branch_middle" type="capsule" size="0.008 0.054" pos="-0.03 0 0.258" euler="0 -70 0" material="mat_wood"/>
+      <geom name="rack_branch_upper" type="capsule" size="0.008 0.054" pos="-0.03 0 0.387" euler="0 -70 0" material="mat_wood"/> -->
+      <geom name="rack_branch_lower" type="capsule" size="0.008 0.054" pos="-0.03 0 0.159" euler="0 -70 0" material="mat_wood"/>
+      <geom name="rack_branch_middle" type="capsule" size="0.008 0.108" pos="-0.1 0 0.298" euler="0 -70 0" material="mat_wood"/>
+      <geom name="rack_branch_upper" type="capsule" size="0.008 0.054" pos="-0.03 0 0.387" euler="0 -70 0" material="mat_wood"/>
     </body>
 
     <!-- Camera target site -->
