@@ -39,7 +39,7 @@
       <geom name="table_leg4" type="cylinder" size="0.03 0.1" pos="-0.35 -0.45 0" material="table_mat"/>
     </body>
 
-    <!-- Convex tapered mug: upper profile matches mug.xml, lower profile narrows inward -->
+    <!-- Convex tapered mug: upper profile matches mug_0.xml, lower profile narrows inward -->
     <body name="source_object" pos="0.5 -0.2 0.22" euler="0 0 -1.0472">
       <freejoint name="source_object_joint"/>
       <inertial mass="0.58" pos="0 0 0.072" diaginertia="0.0019 0.0019 0.0012"/>
@@ -47,7 +47,7 @@
       <!-- Bottom face radius is half of the original 0.07, so area is 0.25x -->
       <geom name="mug_bottom" type="cylinder" size="0.035 0.004" pos="0 0 0.004" material="mug_mat"/>
 
-      <!-- Upper wall: same top contour as mug.xml -->
+      <!-- Upper wall: same top contour as mug_0.xml -->
       <geom name="mug_wall_00" type="box" size="0.004 0.018 0.036" pos="0.066 0 0.124" euler="0 0 0" material="mug_mat"/>
       <geom name="mug_wall_01" type="box" size="0.004 0.018 0.036" pos="0.05716 0.033 0.124" euler="0 0 0.5236" material="mug_mat"/>
       <geom name="mug_wall_02" type="box" size="0.004 0.018 0.036" pos="0.033 0.05716 0.124" euler="0 0 1.0472" material="mug_mat"/>

@@ -1,23 +1,43 @@
-# Claude
-.claude
-CLAUDE.md
+# Local assistant/tooling files
+.claude/
 .codex
+CLAUDE.md
 
-# Checkpoints
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+
+# Environments and local config
+.env
+.env.*
+!.env.example
+.venv/
+venv/
+env/
+
+# Editor/OS metadata
+.DS_Store
+.vscode/
+
+# Model weights and generated experiment outputs
 *.pt
 *.pth
+*.ckpt
+checkpoints/
+results/
+archive/
+MUJOCO_LOG.TXT
 
-# franka
-asset/panda_assets/
-asset/panda.xml
-
-# sam2
+# Optional external dependencies checked out locally
+PyRep/
+RLBench/
 sam2_repo/
 
-archive/
-results/
-
-# Simulation
-RLBench/
-PyRep/
-MUJOCO_LOG.TXT
+# Local MuJoCo/Franka assets. See README for setup notes.
+asset/panda.xml
+asset/panda_assets/

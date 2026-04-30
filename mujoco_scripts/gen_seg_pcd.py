@@ -4,7 +4,7 @@ Combines masks with depth data, deprojects to 3D, transforms to world frame,
 and merges pointclouds from all available cameras.
 
 Usage:
-    python gen_seg_pcd.py --object mug
+    python -m mujoco_scripts.gen_seg_pcd --object mug_0
 """
 
 import argparse
@@ -29,7 +29,7 @@ from utils import downsample_pcd
 
 def main():
     parser = argparse.ArgumentParser(description='Generate segmented pointclouds')
-    parser.add_argument('--object', type=str, default='mug', help='Object name')
+    parser.add_argument('--object', type=str, default='mug_0', help='Object name')
     parser.add_argument('--demo_index', type=int, default=0, help='Demo index to process')
     parser.add_argument('--voxel_size', type=float, default=0.005, help='Voxel size for downsampling')
     args = parser.parse_args()

@@ -1,15 +1,15 @@
-from rlbench.tasks import *
 import numpy as np
-from rlbench.backend.spawn_boundary import BoundingBox
-from tqdm import tqdm
 from rlbench.action_modes.action_mode import MoveArmThenGripper
 from rlbench.action_modes.arm_action_modes import EndEffectorPoseViaIK
 from rlbench.action_modes.gripper_action_modes import Discrete
+from rlbench.backend.spawn_boundary import BoundingBox
 from rlbench.environment import Environment
 from rlbench.observation_config import ObservationConfig
-from tqdm import trange
-from utils import *
+from rlbench.tasks import *
+from tqdm import tqdm, trange
+
 from instant_policy import sample_to_cond_demo
+from utils import pose_to_transform, subsample_pcd, transform_pcd, transform_to_pose
 
 
 # Some examples of RLBench tasks
@@ -92,8 +92,8 @@ def create_sim_env(task_name, headless=False, restrict_rot=True):
     if restrict_rot:
         env._scene.task.base_rotation_bounds = lambda: ((0.0, 0.0, max(rot_bounds[0][2], mean_rot - np.pi / 3)),
                                                         (0.0, 0.0, min(rot_bounds[1][2], mean_rot + np.pi / 3)))
-    
     return env, task
+
 
 def rollout_model(model, num_demos, task_name='phone_on_base', max_execution_steps=30,
                   execution_horizon=8, num_rollouts=2, headless=False, num_traj_wp=10, restrict_rot=True):
@@ -104,7 +104,7 @@ def rollout_model(model, num_demos, task_name='phone_on_base', max_execution_ste
         'demos': [dict()] * num_demos,
         'live': dict(),
     }
-    for i in tqdm(range(num_demos), desc=f'Collecting demos', total=num_demos, leave=False):
+    for i in tqdm(range(num_demos), desc='Collecting demos', total=num_demos, leave=False):
         done = False
         while not done:
             try:
@@ -113,7 +113,7 @@ def rollout_model(model, num_demos, task_name='phone_on_base', max_execution_ste
                 full_sample['demos'][i] = sample_to_cond_demo(sample, num_traj_wp)
                 assert len(full_sample['demos'][i]['obs']) == num_traj_wp
                 done = True
-            except:
+            except Exception:
                 continue
     ####################################################################################################################
     successes = []
@@ -124,7 +124,7 @@ def rollout_model(model, num_demos, task_name='phone_on_base', max_execution_ste
             try:
                 task.reset()
                 done = True
-            except:
+            except Exception:
                 continue
 
         env_action = np.zeros(8)
@@ -135,8 +135,8 @@ def rollout_model(model, num_demos, task_name='phone_on_base', max_execution_ste
             T_w_e = pose_to_transform(curr_obs.gripper_pose)
             full_sample['live']['obs'] = [transform_pcd(subsample_pcd(get_point_cloud(curr_obs)),
                                                         np.linalg.inv(T_w_e))]
-            full_sample['live']['grips'] = [curr_obs.gripper_open]            
-            full_sample['live']['T_w_es'] = [T_w_e]            
+            full_sample['live']['grips'] = [curr_obs.gripper_open]
+            full_sample['live']['T_w_es'] = [T_w_e]
 
             actions, grips = model.predict_actions(full_sample)
 
@@ -146,7 +146,7 @@ def rollout_model(model, num_demos, task_name='phone_on_base', max_execution_ste
                 try:
                     curr_obs, reward, terminate = task.step(env_action)
                     success = int(terminate and reward > 0.)
-                except Exception as e:
+                except Exception:
                     terminate = True
                 if terminate:
                     break

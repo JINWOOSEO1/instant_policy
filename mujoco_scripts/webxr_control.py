@@ -1,25 +1,25 @@
 # Author: Jimmy Wu
 # Date: October 2024
 
+import json
 import logging
 import math
+import os
 import threading
 import time
+from argparse import ArgumentParser
 from queue import Empty, Queue
+
 import numpy as np
 import zmq
-import json
 from flask import Flask, render_template
 from flask_socketio import SocketIO, emit
 from scipy.spatial.transform import Rotation as R
-from argparse import ArgumentParser
-import os
 
-# from constants import TELEOP_HOST
 TELEOP_HOST = '0.0.0.0'  # bind all interfaces (needed for ngrok tunnel)
 
-# ngrok settings — set your static domain from https://dashboard.ngrok.com/domains
-NGROK_DOMAIN = 'unsymmetrized-leslee-sedentarily.ngrok-free.dev'
+# Optional static ngrok domain. Leave unset for a generated ngrok URL.
+NGROK_DOMAIN = os.environ.get('INSTANT_POLICY_NGROK_DOMAIN')
 
 # ZMQ topic ports
 ZMQ_PUB_PORT = 5555  # Single PUB socket, topic-prefixed messages
@@ -103,6 +103,7 @@ class WebServer:
 
 DEVICE_CAMERA_OFFSET = np.array([0.0, 0.02, -0.04])  # iPhone 14 Pro
 
+
 # Convert coordinate system from WebXR to robot
 def convert_webxr_pose(pos, quat):
     # WebXR: +x right, +y up, +z back; Robot: +x forward, +y left, +z up
@@ -115,6 +116,7 @@ def convert_webxr_pose(pos, quat):
     return pos, rot
 
 TWO_PI = 2 * math.pi
+
 
 class TeleopController:
     def __init__(self):
@@ -264,6 +266,7 @@ class TeleopController:
 
         return action
 
+
 # Teleop using WebXR phone web app
 class TeleopPolicy(Policy):
     def __init__(self):
@@ -329,11 +332,11 @@ class TeleopPolicy(Policy):
     def _process_message(self, data):
         self.teleop_controller.process_message(data)
 
-if __name__ == '__main__':
-    from constants import POLICY_CONTROL_PERIOD
 
+if __name__ == '__main__':
     parser = ArgumentParser()
     args = parser.parse_args()
+    control_period = float(os.environ.get('POLICY_CONTROL_PERIOD', '0.05'))
 
     logging.basicConfig(level=logging.INFO)
     logger = logging.getLogger(__name__)
@@ -389,7 +392,7 @@ if __name__ == '__main__':
 
         if action is None:
             logger.info("Action was none")
-            time.sleep(POLICY_CONTROL_PERIOD)
+            time.sleep(control_period)
             prev_target_pos, prev_target_rot = None, None
             continue
 
@@ -418,7 +421,7 @@ if __name__ == '__main__':
             max_linear_vel = 1.0  # m/s
             max_angular_vel = 4.0  # rad/s
 
-            period = np.max([POLICY_CONTROL_PERIOD, action['data_time'] - prev_data_time])
+            period = np.max([control_period, action['data_time'] - prev_data_time])
             delta_linear = np.clip(delta_linear / period, -max_linear_vel, max_linear_vel)
             delta_angular = np.clip(delta_angular / period, -max_angular_vel, max_angular_vel)
 
@@ -440,4 +443,4 @@ if __name__ == '__main__':
         prev_target_rot = R.from_quat(current_quat.copy())
         prev_data_time = action['data_time']
 
-        time.sleep(POLICY_CONTROL_PERIOD)  # Note: Not precise
+        time.sleep(control_period)  # Note: Not precise

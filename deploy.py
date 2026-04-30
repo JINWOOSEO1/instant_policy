@@ -1,16 +1,10 @@
-'''
-This scripts shows and example of how Instant Policy could be used at deployment.
-'''
-from instant_policy import (
-    sample_to_cond_demo,
-    GraphDiffusion
-)
-from utils import (
-    transform_pcd,
-    subsample_pcd
-)
-import torch
+"""Example integration points for deploying Instant Policy on a real robot."""
+
 import numpy as np
+import torch
+
+from instant_policy import GraphDiffusion, sample_to_cond_demo
+from utils import subsample_pcd, transform_pcd
 
 
 if __name__ == '__main__':
@@ -32,7 +26,7 @@ if __name__ == '__main__':
                                                 map_location=device)
 
     model.set_num_demos(num_demos)
-    model.set_num_diffusion_steps(4)
+    model.set_num_diffusion_steps(num_diffusion_iters)
     model.eval()
     ####################################################################################################################
     # Process demonstrations.

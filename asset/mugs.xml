@@ -39,7 +39,7 @@
     </body>
 
     <!-- ============================================================ -->
-    <!-- Mug 0: cylindrical 12-panel (mug.xml)                        -->
+    <!-- Mug 0: cylindrical 12-panel (mug_0.xml)                      -->
     <!-- ============================================================ -->
     <body name="mug_0" pos="0.5 -0.50 0.22" euler="0 0 -1.0472">
       <geom name="m0_bottom" type="cylinder" size="0.07 0.004" pos="0 0 0.004" material="mug_mat_0"/>

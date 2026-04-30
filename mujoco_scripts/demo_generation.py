@@ -11,13 +11,13 @@ Usage:
     python -m mujoco_scripts.demo_generation --object box --sam2
 
     # Rule-based mug-hanging demo with GT masks
-    python -m mujoco_scripts.demo_generation --object mug
+    python -m mujoco_scripts.demo_generation --object mug_0
 
     # Teleop demo with GT masks
-    python -m mujoco_scripts.demo_generation --object mug --teleop
+    python -m mujoco_scripts.demo_generation --object mug_0 --teleop
 
     # Teleop demo with SAM2 masks
-    python -m mujoco_scripts.demo_generation --object mug --sam2 --teleop
+    python -m mujoco_scripts.demo_generation --object mug_0 --sam2 --teleop
 """
 
 import argparse
@@ -50,10 +50,10 @@ from mujoco_scripts.simulation import MujocoEnv
 
 # ─── Object segmentation config ──────────────────────────────────────────────
 
-MUG_OBJECTS = {'mug', 'mug_1', 'mug_2', 'mug_3', 'mug_4', 'mug_3branch'}
+MUG_OBJECTS = {'mug_0', 'mug_1', 'mug_2', 'mug_3', 'mug_4', 'mug_3branch'}
 
 OBJECT_GEOM_NAMES = {
-    'mug': [
+    'mug_0': [
         # mug body
         'mug_bottom',
         'mug_wall_00', 'mug_wall_01', 'mug_wall_02', 'mug_wall_03',
@@ -140,7 +140,7 @@ DEFAULT_PREVIEW_HEIGHT = 480
 DEFAULT_PREVIEW_DISPLAY_SCALE = 1.5
 RULE_DEMO_FRAME_CAPS = {
     'box': 120,
-    'mug': 200,
+    'mug_0': 200,
     'mug_1': 200,
     'mug_2': 200,
     'mug_3': 200,
@@ -749,7 +749,7 @@ def collect_demo(args):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='MuJoCo demo generation for Instant Policy')
-    parser.add_argument('--object', type=str, default='mug',
+    parser.add_argument('--object', type=str, default='mug_0',
                         help='Object name (loads asset/{object}.xml)')
     parser.add_argument('--demo_index', type=int, default=0,
                         help='Demo index to save under results/{object}/demo/demo_{index}')
@@ -759,7 +759,7 @@ if __name__ == '__main__':
                         help='Recording frame rate')
     parser.add_argument('--max_frames', type=int, default=2000,
                         help='Maximum number of frames to record '
-                             '(rule mode: box capped at 120, mug capped at 200)')
+                             '(rule mode: box capped at 120, mug-family objects capped at 200)')
     parser.add_argument('--preview_camera', type=str, default=DEFAULT_PREVIEW_CAMERA,
                         help='Camera name used for the teleop preview window')
     parser.add_argument('--preview_width', type=int, default=DEFAULT_PREVIEW_WIDTH,

@@ -11,7 +11,7 @@
 #   bash mujoco_scripts/run_pipeline.sh [--object OBJECT] [--num-demos 1] [--skip-to STEP]
 #
 # Options:
-#   OBJECT                Object name (default: mug), loads asset/{NAME}.xml
+#   OBJECT                Object name (default: mug_0), loads asset/{NAME}.xml
 #   --object NAME         Object name override (same as positional OBJECT)
 #   --num-demos N         Number of demos to collect (default: 1)
 #   --fps FPS             Recording frame rate (default: 25)
@@ -35,7 +35,7 @@ cd "$PROJECT_ROOT"
 export PYTHONPATH="${PROJECT_ROOT}:${SCRIPT_DIR}:${PYTHONPATH:-}"
 
 # ─── Defaults ────────────────────────────────────────────────────────────────
-OBJECT="mug"
+OBJECT="mug_0"
 NUM_DEMOS=1
 FPS=25
 MAX_FRAMES=2000
@@ -83,12 +83,20 @@ done
 STEPS=(collect pcd deploy)
 
 start_idx=0
+skip_to_found=0
 for i in "${!STEPS[@]}"; do
     if [[ "${STEPS[$i]}" == "$SKIP_TO" ]]; then
         start_idx=$i
+        skip_to_found=1
         break
     fi
 done
+
+if [[ $skip_to_found -eq 0 ]]; then
+    echo "Invalid --skip-to value: $SKIP_TO"
+    echo "Expected one of: ${STEPS[*]}"
+    exit 1
+fi
 
 run_step() {
     local step_name="$1"
@@ -135,23 +143,30 @@ if [[ $USE_SAM2 -eq 1 ]]; then
     DEPLOY_ARGS+=(--sam2 --sam2_config "$SAM2_CONFIG" --sam2_ckpt "$SAM2_CKPT")
 fi
 
-# ─── Clean previous results (including old demo files) ────────────────────────
-echo "  Cleaning previous results in ${RESULT_DIR} ..."
-rm -rf "${DEMO_DIR}"/demo_*
-for subdir in "${DEMO_POSE_SUBDIR}" mask RGBD_images seg_pcd gripper_state; do
-    if [[ -d "${DEMO_DIR}/${subdir}" ]]; then
-        rm -rf "${DEMO_DIR}/${subdir:?}"
-    fi
-done
-rm -f "${DEMO_DIR}/gripper_state.npy"
-
-rm -f "${LIVE_DIR}"/step_*.npy
-if [[ -d "${LIVE_POSE_DIR}" ]]; then
-    rm -rf "${LIVE_POSE_DIR:?}"/*
+# ─── Clean outputs for the stages that will be regenerated ───────────────────
+if run_step "collect"; then
+    echo "  Cleaning previous demos in ${DEMO_DIR} ..."
+    rm -rf "${DEMO_DIR}"/demo_*
+    for subdir in "${DEMO_POSE_SUBDIR}" mask RGBD_images seg_pcd gripper_state; do
+        if [[ -d "${DEMO_DIR}/${subdir}" ]]; then
+            rm -rf "${DEMO_DIR}/${subdir:?}"
+        fi
+    done
+    rm -f "${DEMO_DIR}/gripper_state.npy"
+    echo "  Demo cleanup done."
+    echo ""
 fi
-rm -f "${LIVE_DIR}/gripper_state.npy"
-echo "  Done."
-echo ""
+
+if run_step "deploy"; then
+    echo "  Cleaning previous live rollout logs in ${LIVE_DIR} ..."
+    rm -f "${LIVE_DIR}"/step_*.npy
+    if [[ -d "${LIVE_POSE_DIR}" ]]; then
+        rm -rf "${LIVE_POSE_DIR:?}"/*
+    fi
+    rm -f "${LIVE_DIR}/gripper_state.npy"
+    echo "  Live cleanup done."
+    echo ""
+fi
 
 # ─── Demo collection loop (Steps 1-3 repeated per demo) ──────────────────────
 for demo_idx in $(seq 0 $((NUM_DEMOS - 1))); do
@@ -165,7 +180,7 @@ for demo_idx in $(seq 0 $((NUM_DEMOS - 1))); do
         echo "──────────────────────────────────────────────────────────"
         echo "  Step 1/3: Collect demo + generate masks"
         echo "──────────────────────────────────────────────────────────"
-        python mujoco_scripts/demo_generation.py "${COLLECT_ARGS[@]}" --demo_index "$demo_idx"
+        python -m mujoco_scripts.demo_generation "${COLLECT_ARGS[@]}" --demo_index "$demo_idx"
         echo ""
         echo "  Demo collection complete."
         echo ""
@@ -176,7 +191,7 @@ for demo_idx in $(seq 0 $((NUM_DEMOS - 1))); do
         echo "──────────────────────────────────────────────────────────"
         echo "  Step 2/3: Generate segmented pointclouds"
         echo "──────────────────────────────────────────────────────────"
-        python mujoco_scripts/gen_seg_pcd.py \
+        python -m mujoco_scripts.gen_seg_pcd \
             --object "$OBJECT" \
             --demo_index "$demo_idx" \
             --voxel_size "$VOXEL_SIZE"
@@ -192,7 +207,7 @@ if run_step "deploy"; then
     echo "──────────────────────────────────────────────────────────"
     echo "  Step 3/3: Deploy Instant Policy"
     echo "──────────────────────────────────────────────────────────"
-    python mujoco_scripts/deploy_mujoco.py "${DEPLOY_ARGS[@]}"
+    python -m mujoco_scripts.deploy_mujoco "${DEPLOY_ARGS[@]}"
     echo ""
     echo "  Deployment complete."
     echo ""

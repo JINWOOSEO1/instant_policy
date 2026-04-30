@@ -1,9 +1,9 @@
-from instant_policy import GraphDiffusion
-from sim_utils import rollout_model
-
-import torch
 import argparse
 
+import torch
+
+from instant_policy import GraphDiffusion
+from sim_utils import rollout_model
 
 
 if __name__ == '__main__':
@@ -12,15 +12,17 @@ if __name__ == '__main__':
     parser.add_argument('--num_demos', type=int, default=2)
     parser.add_argument('--num_rollouts', type=int, default=10)
     parser.add_argument('--restrict_rot', type=int, default=1)
-    restrict_rot = bool(parser.parse_args().restrict_rot)
-    task_name = parser.parse_args().task_name
-    num_demos = parser.parse_args().num_demos
-    num_rollouts = parser.parse_args().num_rollouts
+    args = parser.parse_args()
+
+    restrict_rot = bool(args.restrict_rot)
+    task_name = args.task_name
+    num_demos = args.num_demos
+    num_rollouts = args.num_rollouts
     ####################################################################################################################
     model_path = './checkpoints'
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
-    model = GraphDiffusion.load_from_checkpoint(f'{model_path}/model.pt', 
+    model = GraphDiffusion.load_from_checkpoint(f'{model_path}/model.pt',
                                                 device=device,
                                                 strict=True,
                                                 map_location=device)

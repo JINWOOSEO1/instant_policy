@@ -158,7 +158,7 @@ def main(argv=None):
     parser = argparse.ArgumentParser(
         description="Deploy Instant Policy in MuJoCo with GT masks or optional SAM2 masks"
     )
-    parser.add_argument("--object", type=str, default="mug")
+    parser.add_argument("--object", type=str, default="mug_0")
     parser.add_argument(
         "--sam2",
         action="store_true",
