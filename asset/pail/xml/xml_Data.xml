@@ -1,0 +1,153 @@
+<mujoco model="articulated_pail">
+    <compiler angle="radian" autolimits="false"/>
+
+    <asset>
+        <mesh name="body_mesh" file="../meshes/obj/body.obj" scale="0.4 0.4 0.4"/>
+        <mesh name="handle_mesh" file="../meshes/obj/handle_thick.obj" scale="0.4 0.4 0.4"/>
+    </asset>
+
+    <worldbody>
+        <body name="base_body" pos="0 0 0">
+            <inertial pos="0 0 -0.028" mass="7.0" diaginertia="0.1 0.1 0.1"/>
+
+            <!-- Visual mesh (no collision) -->
+            <geom type="mesh" mesh="body_mesh" name="visual_body" contype="0" conaffinity="0" group="1"/>
+
+            <!-- Collision: 8 thin box walls forming hollow octagon -->
+            <!-- radius=0.057, wall thickness=0.004, center_z=-0.048, half_height=0.0734 -->
+            <!-- size="0.002 0.0218 0.0734" = half-thickness, half-tangent-width, half-height -->
+            <geom type="box" size="0.002 0.0218 0.0734" pos="0.057 0 -0.048" euler="0 0 0" rgba="0.3 0.3 0.3 0.3" name="collision_wall_0" group="3"/>
+            <geom type="box" size="0.002 0.0218 0.0734" pos="0.0403 0.0403 -0.048" euler="0 0 0.7854" rgba="0.3 0.3 0.3 0.3" name="collision_wall_1" group="3"/>
+            <geom type="box" size="0.002 0.0218 0.0734" pos="0 0.057 -0.048" euler="0 0 1.5708" rgba="0.3 0.3 0.3 0.3" name="collision_wall_2" group="3"/>
+            <geom type="box" size="0.002 0.0218 0.0734" pos="-0.0403 0.0403 -0.048" euler="0 0 2.3562" rgba="0.3 0.3 0.3 0.3" name="collision_wall_3" group="3"/>
+            <geom type="box" size="0.002 0.0218 0.0734" pos="-0.057 0 -0.048" euler="0 0 3.1416" rgba="0.3 0.3 0.3 0.3" name="collision_wall_4" group="3"/>
+            <geom type="box" size="0.002 0.0218 0.0734" pos="-0.0403 -0.0403 -0.048" euler="0 0 3.9270" rgba="0.3 0.3 0.3 0.3" name="collision_wall_5" group="3"/>
+            <geom type="box" size="0.002 0.0218 0.0734" pos="0 -0.057 -0.048" euler="0 0 4.7124" rgba="0.3 0.3 0.3 0.3" name="collision_wall_6" group="3"/>
+            <geom type="box" size="0.002 0.0218 0.0734" pos="0.0403 -0.0403 -0.048" euler="0 0 5.4978" rgba="0.3 0.3 0.3 0.3" name="collision_wall_7" group="3"/>
+
+            <!-- Collision: bottom disk -->
+            <geom type="cylinder" size="0.052 0.0015" pos="0 0 -0.120" rgba="0.3 0.3 0.3 0.3" name="collision_bottom" group="3"/>
+
+            <!-- CoM visualization -->
+            <!-- <geom type="sphere" size="0.01" pos="0 0 -0.028" rgba="0 0 1 1" contype="0" conaffinity="0" name="com_body"/> -->
+
+            <body name="handle" pos="0 0 0">
+                <inertial pos="0 0.094 -0.001" mass="0.5" diaginertia="0.01 0.01 0.01"/>
+
+                <!-- Joint with minimal damping for smooth rotation -->
+                <joint name="pail_handle_hinge" type="hinge" pos="0 0 0" axis="1 0 0" range="1.0 2.14" damping="0.1" armature="0.01"/>
+
+                <!-- Visual mesh (no collision) -->
+                <geom type="mesh" mesh="handle_mesh" name="visual_handle" contype="0" conaffinity="0" group="1"/>
+
+                <!-- Collision: 8 capsules tracing handle arc from 9 waypoints -->
+                <!-- radius=0.005 matches wire cross-section -->
+                <!-- Right attach to Right upper -->
+                <geom type="capsule" fromto="0.068 0.041 -0.001 0.052 0.100 -0.001" size="0.005" rgba="0.3 0.3 0.3 0.3" name="collision_handle_1" group="3"/>
+                <!-- Right upper to Right lower -->
+                <geom type="capsule" fromto="0.052 0.100 -0.001 0.036 0.120 -0.001" size="0.005" rgba="0.3 0.3 0.3 0.3" name="collision_handle_2" group="3"/>
+                <!-- Right lower to Right-center -->
+                <geom type="capsule" fromto="0.036 0.120 -0.001 0.028 0.125 -0.001" size="0.005" rgba="0.3 0.3 0.3 0.3" name="collision_handle_3" group="3"/>
+                <!-- Right-center to Center bottom -->
+                <geom type="capsule" fromto="0.028 0.125 -0.001 0.0 0.125 -0.001" size="0.005" rgba="0.3 0.3 0.3 0.3" name="collision_handle_4" group="3"/>
+                <!-- Center bottom to Left-center -->
+                <geom type="capsule" fromto="0.0 0.125 -0.001 -0.028 0.125 -0.001" size="0.005" rgba="0.3 0.3 0.3 0.3" name="collision_handle_5" group="3"/>
+                <!-- Left-center to Left lower -->
+                <geom type="capsule" fromto="-0.028 0.125 -0.001 -0.036 0.120 -0.001" size="0.005" rgba="0.3 0.3 0.3 0.3" name="collision_handle_6" group="3"/>
+                <!-- Left lower to Left upper -->
+                <geom type="capsule" fromto="-0.036 0.120 -0.001 -0.052 0.099 -0.001" size="0.005" rgba="0.3 0.3 0.3 0.3" name="collision_handle_7" group="3"/>
+                <!-- Left upper to Left attach -->
+                <geom type="capsule" fromto="-0.052 0.099 -0.001 -0.067 0.043 -0.001" size="0.005" rgba="0.3 0.3 0.3 0.3" name="collision_handle_8" group="3"/>
+
+                <!-- CoM visualization -->
+                <!-- <geom type="sphere" size="0.01" pos="0 0.094 -0.001" rgba="0 0 1 1" contype="0" conaffinity="0" name="com_handle"/> -->
+            </body>
+        </body>
+    </worldbody>
+
+    <contact>
+        <!-- Handle capsule vs wall box pairs (8 capsules x 8 walls = 64) -->
+        <pair geom1="collision_wall_0" geom2="collision_handle_1"/>
+        <pair geom1="collision_wall_0" geom2="collision_handle_2"/>
+        <pair geom1="collision_wall_0" geom2="collision_handle_3"/>
+        <pair geom1="collision_wall_0" geom2="collision_handle_4"/>
+        <pair geom1="collision_wall_0" geom2="collision_handle_5"/>
+        <pair geom1="collision_wall_0" geom2="collision_handle_6"/>
+        <pair geom1="collision_wall_0" geom2="collision_handle_7"/>
+        <pair geom1="collision_wall_0" geom2="collision_handle_8"/>
+
+        <pair geom1="collision_wall_1" geom2="collision_handle_1"/>
+        <pair geom1="collision_wall_1" geom2="collision_handle_2"/>
+        <pair geom1="collision_wall_1" geom2="collision_handle_3"/>
+        <pair geom1="collision_wall_1" geom2="collision_handle_4"/>
+        <pair geom1="collision_wall_1" geom2="collision_handle_5"/>
+        <pair geom1="collision_wall_1" geom2="collision_handle_6"/>
+        <pair geom1="collision_wall_1" geom2="collision_handle_7"/>
+        <pair geom1="collision_wall_1" geom2="collision_handle_8"/>
+
+        <pair geom1="collision_wall_2" geom2="collision_handle_1"/>
+        <pair geom1="collision_wall_2" geom2="collision_handle_2"/>
+        <pair geom1="collision_wall_2" geom2="collision_handle_3"/>
+        <pair geom1="collision_wall_2" geom2="collision_handle_4"/>
+        <pair geom1="collision_wall_2" geom2="collision_handle_5"/>
+        <pair geom1="collision_wall_2" geom2="collision_handle_6"/>
+        <pair geom1="collision_wall_2" geom2="collision_handle_7"/>
+        <pair geom1="collision_wall_2" geom2="collision_handle_8"/>
+
+        <pair geom1="collision_wall_3" geom2="collision_handle_1"/>
+        <pair geom1="collision_wall_3" geom2="collision_handle_2"/>
+        <pair geom1="collision_wall_3" geom2="collision_handle_3"/>
+        <pair geom1="collision_wall_3" geom2="collision_handle_4"/>
+        <pair geom1="collision_wall_3" geom2="collision_handle_5"/>
+        <pair geom1="collision_wall_3" geom2="collision_handle_6"/>
+        <pair geom1="collision_wall_3" geom2="collision_handle_7"/>
+        <pair geom1="collision_wall_3" geom2="collision_handle_8"/>
+
+        <pair geom1="collision_wall_4" geom2="collision_handle_1"/>
+        <pair geom1="collision_wall_4" geom2="collision_handle_2"/>
+        <pair geom1="collision_wall_4" geom2="collision_handle_3"/>
+        <pair geom1="collision_wall_4" geom2="collision_handle_4"/>
+        <pair geom1="collision_wall_4" geom2="collision_handle_5"/>
+        <pair geom1="collision_wall_4" geom2="collision_handle_6"/>
+        <pair geom1="collision_wall_4" geom2="collision_handle_7"/>
+        <pair geom1="collision_wall_4" geom2="collision_handle_8"/>
+
+        <pair geom1="collision_wall_5" geom2="collision_handle_1"/>
+        <pair geom1="collision_wall_5" geom2="collision_handle_2"/>
+        <pair geom1="collision_wall_5" geom2="collision_handle_3"/>
+        <pair geom1="collision_wall_5" geom2="collision_handle_4"/>
+        <pair geom1="collision_wall_5" geom2="collision_handle_5"/>
+        <pair geom1="collision_wall_5" geom2="collision_handle_6"/>
+        <pair geom1="collision_wall_5" geom2="collision_handle_7"/>
+        <pair geom1="collision_wall_5" geom2="collision_handle_8"/>
+
+        <pair geom1="collision_wall_6" geom2="collision_handle_1"/>
+        <pair geom1="collision_wall_6" geom2="collision_handle_2"/>
+        <pair geom1="collision_wall_6" geom2="collision_handle_3"/>
+        <pair geom1="collision_wall_6" geom2="collision_handle_4"/>
+        <pair geom1="collision_wall_6" geom2="collision_handle_5"/>
+        <pair geom1="collision_wall_6" geom2="collision_handle_6"/>
+        <pair geom1="collision_wall_6" geom2="collision_handle_7"/>
+        <pair geom1="collision_wall_6" geom2="collision_handle_8"/>
+
+        <pair geom1="collision_wall_7" geom2="collision_handle_1"/>
+        <pair geom1="collision_wall_7" geom2="collision_handle_2"/>
+        <pair geom1="collision_wall_7" geom2="collision_handle_3"/>
+        <pair geom1="collision_wall_7" geom2="collision_handle_4"/>
+        <pair geom1="collision_wall_7" geom2="collision_handle_5"/>
+        <pair geom1="collision_wall_7" geom2="collision_handle_6"/>
+        <pair geom1="collision_wall_7" geom2="collision_handle_7"/>
+        <pair geom1="collision_wall_7" geom2="collision_handle_8"/>
+
+        <!-- Handle capsule vs bottom disk pairs (8 capsules x 1 disk = 8) -->
+        <pair geom1="collision_bottom" geom2="collision_handle_1"/>
+        <pair geom1="collision_bottom" geom2="collision_handle_2"/>
+        <pair geom1="collision_bottom" geom2="collision_handle_3"/>
+        <pair geom1="collision_bottom" geom2="collision_handle_4"/>
+        <pair geom1="collision_bottom" geom2="collision_handle_5"/>
+        <pair geom1="collision_bottom" geom2="collision_handle_6"/>
+        <pair geom1="collision_bottom" geom2="collision_handle_7"/>
+        <pair geom1="collision_bottom" geom2="collision_handle_8"/>
+    </contact>
+
+</mujoco>

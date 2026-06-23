@@ -263,14 +263,20 @@ class MujocoEnv:
                 geom_ids.add(gid)
         return geom_ids
 
-    def get_geom_ids_by_names(self, geom_names):
+    def get_geom_ids_by_names(self, geom_names, strict=True):
         """Return the set of geom IDs corresponding to the given geom name list."""
         geom_ids = set()
+        missing_names = []
         for name in geom_names:
             gid = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_GEOM, name)
             if gid == -1:
-                raise ValueError(f'Geom "{name}" not found in model')
+                missing_names.append(name)
+                continue
             geom_ids.add(gid)
+        if missing_names and strict:
+            raise ValueError(f'Geom "{missing_names[0]}" not found in model')
+        if not geom_ids:
+            raise ValueError('None of the requested geoms were found in model')
         return geom_ids
 
     def render_seg_mask(self, cam_name, geom_ids):

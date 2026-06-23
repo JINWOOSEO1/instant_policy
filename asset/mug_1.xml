@@ -114,6 +114,11 @@
     <!-- Front camera (positive X side, looking back at target) -->
     <camera name="cam_front" pos="1.5426 0.25 1.1" xyaxes="0 1 0 -0.5627 0 0.8266" fovy="45"/>
 
+    <!-- Indexed RGBD collection cameras (left, right, front) -->
+    <camera name="cam_0" pos="0.17 -0.93432 0.924" xyaxes="0.9977 -0.0674 0 0.0344 0.5089 0.8601" fovy="45"/>
+    <camera name="cam_1" pos="0.17 1.43432 0.924" xyaxes="-0.9977 -0.0674 0 0.0344 -0.5089 0.8601" fovy="45"/>
+    <camera name="cam_2" pos="1.5426 0.25 1.1" xyaxes="0 1 0 -0.5627 0 0.8266" fovy="45"/>
+
   </worldbody>
 
   <keyframe>

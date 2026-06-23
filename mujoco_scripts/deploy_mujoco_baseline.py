@@ -14,7 +14,9 @@ import time
 
 import cv2
 import numpy as np
+import mujoco
 import torch
+from pathlib import Path
 
 from instant_policy import GraphDiffusion, sample_to_cond_demo
 from utils import subsample_pcd, transform_pcd, transform_to_pose
@@ -22,6 +24,60 @@ from utils import subsample_pcd, transform_pcd, transform_to_pose
 from mujoco_scripts.demo_generation import OBJECT_GEOM_NAMES, interactive_mask_selection
 from mujoco_scripts.result_io import LiveRolloutWriter, load_demo_from_results
 from mujoco_scripts.simulation import MujocoEnv
+
+
+def _xyaxes_to_camera_matrix(xyaxes):
+    axes = np.asarray(xyaxes, dtype=np.float64)
+    if axes.shape != (6,):
+        raise ValueError(f"--record-camera-xyaxes must have 6 values, got {axes.shape}")
+    x_axis = axes[:3]
+    y_axis = axes[3:]
+    x_axis /= np.linalg.norm(x_axis)
+    y_axis /= np.linalg.norm(y_axis)
+    z_axis = np.cross(x_axis, y_axis)
+    z_norm = np.linalg.norm(z_axis)
+    if z_norm == 0.0:
+        raise ValueError("--record-camera-xyaxes x/y axes must not be collinear")
+    z_axis /= z_norm
+    y_axis = np.cross(z_axis, x_axis)
+    return np.column_stack([x_axis, y_axis, z_axis])
+
+
+def _apply_record_camera_pose(env, camera_name, pos, xyaxes):
+    cam_id = mujoco.mj_name2id(env.model, mujoco.mjtObj.mjOBJ_CAMERA, camera_name)
+    if cam_id == -1:
+        raise ValueError(f'Record camera "{camera_name}" not found')
+
+    mujoco.mj_forward(env.model, env.data)
+
+    camera_pos_world = env.data.cam_xpos[cam_id].copy()
+    camera_mat_world = env.data.cam_xmat[cam_id].reshape(3, 3).copy()
+
+    if pos is not None:
+        camera_pos_world = np.asarray(pos, dtype=np.float64)
+        if camera_pos_world.shape != (3,):
+            raise ValueError(
+                f"--record-camera-pos must have 3 values, got {camera_pos_world.shape}"
+            )
+    if xyaxes is not None:
+        camera_mat_world = _xyaxes_to_camera_matrix(xyaxes)
+
+    body_id = env.model.cam_bodyid[cam_id]
+    body_pos_world = env.data.xpos[body_id].copy()
+    body_mat_world = env.data.xmat[body_id].reshape(3, 3).copy()
+    body_mat_inv = body_mat_world.T
+
+    camera_pos_local = body_mat_inv @ (camera_pos_world - body_pos_world)
+    camera_mat_local = body_mat_inv @ camera_mat_world
+    camera_quat_local = np.empty(4, dtype=np.float64)
+    mujoco.mju_mat2Quat(camera_quat_local, camera_mat_local.reshape(-1))
+
+    env.model.cam_pos[cam_id] = camera_pos_local
+    env.model.cam_quat[cam_id] = camera_quat_local
+    env.model.cam_pos0[cam_id] = camera_pos_world
+    env.model.cam_mat0[cam_id] = camera_mat_world.reshape(-1)
+
+    mujoco.mj_forward(env.model, env.data)
 
 
 def setup_sam2_torch():
@@ -158,7 +214,7 @@ def main(argv=None):
     parser = argparse.ArgumentParser(
         description="Deploy Instant Policy in MuJoCo with GT masks or optional SAM2 masks"
     )
-    parser.add_argument("--object", type=str, default="mug_0")
+    parser.add_argument("--object", type=str, default="scene_standalone")
     parser.add_argument(
         "--sam2",
         action="store_true",
@@ -188,6 +244,28 @@ def main(argv=None):
         default=8,
         help="Number of predicted actions to execute per inference step",
     )
+    parser.add_argument("--object-x", type=float, default=None,
+                        help="Override kettle x position on the table")
+    parser.add_argument("--object-y", type=float, default=None,
+                        help="Override kettle y position on the table")
+    parser.add_argument("--headless", action="store_true",
+                        help="Skip the passive viewer (offscreen rendering only)")
+    parser.add_argument("--record-video", type=str, default=None,
+                        help="Save rollout video to this MP4 path")
+    parser.add_argument("--record-camera", type=str, default="cam_front",
+                        help="Camera used for offscreen recording")
+    parser.add_argument("--record-camera-pos", type=float, nargs=3, default=None,
+                        metavar=("X", "Y", "Z"),
+                        help="Override record camera position")
+    parser.add_argument("--record-camera-xyaxes", type=float, nargs=6, default=None,
+                        metavar=("X0", "X1", "X2", "Y0", "Y1", "Y2"),
+                        help="Override record camera orientation as MuJoCo xyaxes")
+    parser.add_argument("--record-fps", type=float, default=30.0,
+                        help="Video frame rate")
+    parser.add_argument("--record-width", type=int, default=640)
+    parser.add_argument("--record-height", type=int, default=480)
+    parser.add_argument("--max-duration", type=float, default=90.0,
+                        help="Maximum video duration in seconds")
     args = parser.parse_args(argv)
 
     ############################################################################
@@ -228,8 +306,49 @@ def main(argv=None):
 
     ############################################################################
     # Initialise MuJoCo environment
-    env = MujocoEnv(args.object)
-    env.launch_viewer()
+    env = MujocoEnv(
+        args.object,
+        height=480,
+        width=640,
+        cam_names=["cam_left", "cam_front", "cam_right"],
+    )
+
+    if args.object_x is not None or args.object_y is not None:
+        jnt_id = mujoco.mj_name2id(
+            env.model, mujoco.mjtObj.mjOBJ_JOINT, "kettle_root_jnt"
+        )
+        if jnt_id != -1:
+            adr = env.model.jnt_qposadr[jnt_id]
+            if args.object_x is not None:
+                env.data.qpos[adr] = args.object_x
+            if args.object_y is not None:
+                env.data.qpos[adr + 1] = args.object_y
+            mujoco.mj_forward(env.model, env.data)
+
+    if args.record_camera_pos is not None or args.record_camera_xyaxes is not None:
+        _apply_record_camera_pose(
+            env,
+            args.record_camera,
+            args.record_camera_pos,
+            args.record_camera_xyaxes,
+        )
+
+    if not args.headless:
+        env.launch_viewer()
+
+    record_renderer = None
+    video_writer = None
+    total_video_frames = 0
+    if args.record_video:
+        Path(args.record_video).parent.mkdir(parents=True, exist_ok=True)
+        record_renderer = mujoco.Renderer(
+            env.model, height=args.record_height, width=args.record_width
+        )
+        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+        video_writer = cv2.VideoWriter(
+            str(args.record_video), fourcc, args.record_fps,
+            (args.record_width, args.record_height),
+        )
 
     cam_names = env.cam_names
     cam_params = {cam_name: env.get_camera_params(cam_name) for cam_name in cam_names}
@@ -276,8 +395,15 @@ def main(argv=None):
     # Rollout loop
     live_writer = LiveRolloutWriter(args.object)
 
+    stop_recording = False
+    rollout_start_time = time.monotonic()
     for k in range(max_execution_steps):
-        if not env.viewer_is_running():
+        if stop_recording:
+            break
+        if args.record_video and time.monotonic() - rollout_start_time >= args.max_duration:
+            stop_recording = True
+            break
+        if not args.headless and not env.viewer_is_running():
             print("Viewer closed -- stopping.")
             break
 
@@ -331,7 +457,8 @@ def main(argv=None):
 
         if pcd_w is None:
             print(f"[step {k}] No valid pointcloud -- skipping inference.")
-            env.sync_viewer()
+            if not args.headless:
+                env.sync_viewer()
             continue
 
         pcd_ee = transform_pcd(pcd_w, np.linalg.inv(T_w_e))
@@ -362,6 +489,10 @@ def main(argv=None):
         actions_executed = 0
 
         for j in range(args.execution_horizon):
+            if args.record_video and time.monotonic() - rollout_start_time >= args.max_duration:
+                stop_recording = True
+                break
+
             T_w_e_next = T_w_e @ actions[j]
             pose_next = transform_to_pose(T_w_e_next)
             grip_binary = int((pred_grips[j] + 1) / 2 > 0.5)
@@ -372,10 +503,28 @@ def main(argv=None):
             env.set_target(pose_next[:3], pose_next[3:], grip_val)
             env.step(n_substeps=20, converge=True, max_ik_iters=300)
 
-            env.sync_viewer()
+            if not args.headless:
+                env.sync_viewer()
+            if video_writer is not None:
+                record_renderer.update_scene(env.data, camera=args.record_camera)
+                frame_rgb = record_renderer.render()
+                video_writer.write(cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR))
+                total_video_frames += 1
+                if time.monotonic() - rollout_start_time >= args.max_duration:
+                    stop_recording = True
+                    break
             actions_executed += 1
 
         t_execution = time.time() - t0
+        if stop_recording:
+            wall_sec = time.monotonic() - rollout_start_time
+            encoded_sec = total_video_frames / args.record_fps
+            print(
+                "Reached max wall-clock duration "
+                f"({wall_sec:.1f}s / {args.max_duration:.1f}s, "
+                f"encoded video {encoded_sec:.1f}s) -- stopping process."
+            )
+            break
 
         # ── Maintain target FPS ──────────────────────────────────────────────
         elapsed = time.time() - t_loop_start
@@ -395,6 +544,15 @@ def main(argv=None):
             f"sleep={sleep_time*1000:5.1f}ms"
         )
 
+    if video_writer is not None:
+        video_writer.release()
+        wall_sec = time.monotonic() - rollout_start_time
+        print(
+            f"Video saved: {args.record_video} "
+            f"({total_video_frames} frames, "
+            f"{total_video_frames / args.record_fps:.1f}s encoded, "
+            f"{wall_sec:.1f}s wall-clock)"
+        )
     env.close()
     print("Deployment finished.")
 

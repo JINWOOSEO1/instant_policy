@@ -1,0 +1,20 @@
+<mujoco model="mug_rack">
+  <!-- Sim-specific mug rack (radian euler).
+       Used by sim/scene_builder.py with <compiler angle="radian"/>. -->
+  <worldbody>
+    <body name="mug_rack" pos="0 0 0" euler="0 0 1.5708">
+      <geom name="rack_base" type="cylinder" size="0.11 0.014" pos="0 0 0.014"
+            rgba="0.4 0.25 0.15 1"/>
+      <geom name="rack_pole" type="cylinder" size="0.02 0.20" pos="0 0 0.216"
+            rgba="0.4 0.25 0.15 1"/>
+      <geom name="branch_top_1" type="capsule" size="0.008 0.054" pos="0.027 0 0.338" euler="0 1.2217 0"
+            rgba="0.4 0.25 0.15 1"/>
+      <geom name="branch_top_2" type="capsule" size="0.008 0.054" pos="-0.027 0 0.338" euler="0 -1.2217 0"
+            rgba="0.4 0.25 0.15 1"/>
+      <geom name="branch_mid_1" type="capsule" size="0.008 0.054" pos="0 0.027 0.203" euler="-1.2217 0 0"
+            rgba="0.4 0.25 0.15 1"/>
+      <geom name="branch_mid_2" type="capsule" size="0.008 0.054" pos="0 -0.027 0.203" euler="1.2217 0 0"
+            rgba="0.4 0.25 0.15 1"/>
+    </body>
+  </worldbody>
+</mujoco>

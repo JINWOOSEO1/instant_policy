@@ -1,0 +1,100 @@
+<mujoco model="articulated_lantern">
+    <compiler angle="radian" autolimits="false"/>
+
+    <!-- Uniformly scaled by s = 0.8739 (= 1 / 1.1442, the isotropic scale of the
+         kettle->lantern affine in results/.../4_matching/affine_matrix.json) so the
+         lantern matches the kettle's keypoint scale (minimizes keypoint distance
+         error). ALL lengths below (mesh scale, geom size/pos/fromto, inertial/joint
+         pos) were multiplied by s; orientations are unchanged. Mesh scale 4.0 -> 3.4958. -->
+
+    <asset>
+        <mesh name="body_mesh" file="../meshes/obj/body.obj" scale="3.4958 3.4958 3.4958"/>
+        <mesh name="handle_mesh" file="../meshes/obj/handle.obj" scale="3.4958 3.4958 3.4958"/>
+    </asset>
+
+    <worldbody>
+        <body name="base_body" pos="0 0 0">
+            <freejoint name="lantern_root_jnt"/>
+
+            <!-- Keep the free-joint object frame at the physical bottom center.
+                 The scaled lantern collision bottom is z=-0.1573115 in the original asset. -->
+            <body name="lantern_body" pos="0 0 0.1573115">
+            <inertial pos="0 0 -0.052437" mass="0.5" diaginertia="0.01 0.01 0.01"/>
+
+            <!-- Visual mesh (no collision) -->
+            <geom type="mesh" mesh="body_mesh" name="visual_body" contype="0" conaffinity="0" group="1"/>
+
+            <!-- Collision: lantern body — cylinder approximation -->
+            <!-- Main body: radius=0.05943, z from -0.1573 to -0.0035 -->
+            <geom type="cylinder" size="0.059428 0.076907" pos="0 0 -0.080403" rgba="0.3 0.3 0.3 0.3" name="collision_body_main" group="3"/>
+            <!-- Bottom base: wider disk -->
+            <geom type="cylinder" size="0.062924 0.0069915" pos="0 0 -0.15032" rgba="0.3 0.3 0.3 0.3" name="collision_body_bottom" group="3"/>
+            <!-- Chimney/top: narrow cylinder -->
+            <!-- <geom type="cylinder" size="0.027965 0.024470" pos="0 0 0.024470" rgba="0.3 0.3 0.3 0.3" name="collision_body_chimney" group="3"/> -->
+
+            <!-- CoM visualization -->
+            <!-- <geom type="sphere" size="0.017479" pos="0 0 -0.052437" rgba="0 0 1 1" contype="0" conaffinity="0" name="com_body"/> -->
+
+            <body name="handle" pos="0 0 0">
+                <inertial pos="0 0.041949 0.048941" mass="0.5" diaginertia="0.001 0.001 0.001"/>
+
+                <!-- Hinge at attachment points on lantern top rim, axis along x -->
+                <joint name="lantern_handle_hinge" type="hinge" pos="0 0 -0.0034958" axis="1 0 0" range="0.0 1.2" damping="0.01" armature="0.005"/>
+
+                <!-- Visual mesh (no collision) -->
+                <geom type="mesh" mesh="handle_mesh" name="visual_handle" contype="0" conaffinity="0" group="1"/>
+
+                <!-- Collision: 9 capsules tracing arch precisely, curving forward in +y -->
+                <!-- Handle wire radius ~0.0105 (raw ~0.003 x3.4958) -->
+                <!-- friction="slide spin roll" — low spin friction allows handle to rotate in gripper -->
+                <!-- Right arm: attachment to lower -->
+                <geom type="capsule" fromto="0.073411 0.000 -0.0034958 0.073411 0.017479 0.02447" size="0.010487" rgba="0.3 0.3 0.3 0.3" name="collision_handle_1" group="3"/>
+                <!-- Right arm: lower to mid -->
+                <geom type="capsule" fromto="0.073411 0.017479 0.02447 0.073411 0.041949 0.048941" size="0.010487" rgba="0.3 0.3 0.3 0.3" name="collision_handle_2" group="3"/>
+                <!-- Right arm: mid to upper -->
+                <geom type="capsule" fromto="0.073411 0.041949 0.048941 0.069915 0.059428 0.069915" size="0.010487" rgba="0.3 0.3 0.3 0.3" name="collision_handle_3" group="3"/>
+                <!-- Right arm: upper to top-bar transition -->
+                <geom type="capsule" fromto="0.069915 0.059428 0.069915 0.045445 0.073411 0.087394" size="0.010487" rgba="0.3 0.3 0.3 0.3" name="collision_handle_4" group="3"/>
+                <!-- Top bar: flat capsule -->
+                <geom type="capsule" fromto="0.045445 0.073411 0.087394 -0.045445 0.073411 0.087394" size="0.0052437" rgba="0.3 0.3 0.3 0.3" name="collision_handle_5" group="3"/>
+                <!-- Left arm: top-bar transition to upper -->
+                <geom type="capsule" fromto="-0.045445 0.073411 0.087394 -0.069915 0.059428 0.069915" size="0.010487" rgba="0.3 0.3 0.3 0.3" name="collision_handle_6" group="3"/>
+                <!-- Left arm: upper to mid -->
+                <geom type="capsule" fromto="-0.069915 0.059428 0.069915 -0.073411 0.041949 0.048941" size="0.010487" rgba="0.3 0.3 0.3 0.3" name="collision_handle_7" group="3"/>
+                <!-- Left arm: mid to lower -->
+                <geom type="capsule" fromto="-0.073411 0.041949 0.048941 -0.073411 0.017479 0.02447" size="0.010487" rgba="0.3 0.3 0.3 0.3" name="collision_handle_8" group="3"/>
+                <!-- Left arm: lower to attachment -->
+                <geom type="capsule" fromto="-0.073411 0.017479 0.02447 -0.073411 0.000 -0.0034958" size="0.010487" rgba="0.3 0.3 0.3 0.3" name="collision_handle_9" group="3"/>
+
+                <!-- CoM visualization -->
+                <!-- <geom type="sphere" size="0.017479" pos="0 0.041949 0.048941" rgba="0 0 1 1" contype="0" conaffinity="0" name="com_handle"/> -->
+            </body>
+            </body>
+        </body>
+    </worldbody>
+
+    <contact>
+        <!-- Handle capsules vs body main (9 pairs) -->
+        <pair geom1="collision_body_main" geom2="collision_handle_1"/>
+        <pair geom1="collision_body_main" geom2="collision_handle_2"/>
+        <pair geom1="collision_body_main" geom2="collision_handle_3"/>
+        <pair geom1="collision_body_main" geom2="collision_handle_4"/>
+        <pair geom1="collision_body_main" geom2="collision_handle_5"/>
+        <pair geom1="collision_body_main" geom2="collision_handle_6"/>
+        <pair geom1="collision_body_main" geom2="collision_handle_7"/>
+        <pair geom1="collision_body_main" geom2="collision_handle_8"/>
+        <pair geom1="collision_body_main" geom2="collision_handle_9"/>
+
+        <!-- Handle capsules vs body bottom (9 pairs) -->
+        <pair geom1="collision_body_bottom" geom2="collision_handle_1"/>
+        <pair geom1="collision_body_bottom" geom2="collision_handle_2"/>
+        <pair geom1="collision_body_bottom" geom2="collision_handle_3"/>
+        <pair geom1="collision_body_bottom" geom2="collision_handle_4"/>
+        <pair geom1="collision_body_bottom" geom2="collision_handle_5"/>
+        <pair geom1="collision_body_bottom" geom2="collision_handle_6"/>
+        <pair geom1="collision_body_bottom" geom2="collision_handle_7"/>
+        <pair geom1="collision_body_bottom" geom2="collision_handle_8"/>
+        <pair geom1="collision_body_bottom" geom2="collision_handle_9"/>
+    </contact>
+
+</mujoco>

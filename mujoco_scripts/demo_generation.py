@@ -131,9 +131,26 @@ OBJECT_GEOM_NAMES = {
         'target_box_wall_pos_x', 'target_box_wall_neg_x',
         'target_box_wall_pos_y', 'target_box_wall_neg_y',
     ],
+    'scene_standalone': [
+        # kettle/lantern body (visual + collision). Missing optional geoms are
+        # skipped for this scene so the same key can cover either asset.
+        'visual_body', 'visual_cap', 'visual_handle',
+        'collision_base_foot', 'collision_body_lower', 'collision_body_upper',
+        'collision_cap', 'collision_spout_1', 'collision_spout_2',
+        'collision_body_main', 'collision_body_bottom',
+        'collision_handle_1', 'collision_handle_2', 'collision_handle_3',
+        'collision_handle_4', 'collision_handle_5', 'collision_handle_6',
+        'collision_handle_7', 'collision_handle_8', 'collision_handle_9',
+        # mug_rack body
+        'rack_base', 'rack_pole',
+        'branch_top_1', 'branch_top_2',
+        'branch_mid_1', 'branch_mid_2',
+    ],
 }
 
 TELEOP_PREVIEW_WINDOW = 'Teleop Preview'
+DEMO_IMAGE_HEIGHT = 480
+DEMO_IMAGE_WIDTH = 640
 DEFAULT_PREVIEW_CAMERA = 'cam_preview'
 DEFAULT_PREVIEW_WIDTH = 640
 DEFAULT_PREVIEW_HEIGHT = 480
@@ -174,7 +191,10 @@ def resolve_object_geom_ids(env, object_name):
             f'Available: {sorted(OBJECT_GEOM_NAMES.keys())}'
         )
 
-    geom_ids = env.get_geom_ids_by_names(OBJECT_GEOM_NAMES[object_name])
+    geom_ids = env.get_geom_ids_by_names(
+        OBJECT_GEOM_NAMES[object_name],
+        strict=(object_name != 'scene_standalone'),
+    )
     print(f'GT segmentation: object="{object_name}", {len(geom_ids)} geom(s)')
     return geom_ids
 
@@ -547,7 +567,7 @@ def collect_rule_demo(args):
         args.demo_index,
     )
 
-    env = MujocoEnv(args.object)
+    env = MujocoEnv(args.object, height=DEMO_IMAGE_HEIGHT, width=DEMO_IMAGE_WIDTH)
     env.save_camera_params(object_root)
     env.launch_viewer()
 
@@ -628,7 +648,7 @@ def collect_teleop_demo(args):
         args.demo_index,
     )
 
-    env = MujocoEnv(args.object)
+    env = MujocoEnv(args.object, height=DEMO_IMAGE_HEIGHT, width=DEMO_IMAGE_WIDTH)
     env.save_camera_params(object_root)
     preview_cam_id = mujoco.mj_name2id(env.model, mujoco.mjtObj.mjOBJ_CAMERA, args.preview_camera)
     if preview_cam_id == -1:

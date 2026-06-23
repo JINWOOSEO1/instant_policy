@@ -1,0 +1,24 @@
+<mujoco model="mug_rack_tilted">
+  <compiler angle="radian"/>
+  <!-- Variant of mug_rack.xml with an extra vertical branch at the end of the
+       local negative-x top branch. Used by run_sim_oareg tilted mode. -->
+  <worldbody>
+    <body name="mug_rack" pos="0 0 0" euler="0 0 1.5708">
+      <geom name="rack_base" type="cylinder" size="0.11 0.014" pos="0 0 0.014"
+            rgba="0.4 0.25 0.15 1"/>
+      <geom name="rack_pole" type="cylinder" size="0.02 0.20" pos="0 0 0.216"
+            rgba="0.4 0.25 0.15 1"/>
+      <geom name="branch_top_1" type="capsule" size="0.008 0.054" pos="0.027 0 0.338" euler="0 1.2217 0"
+            rgba="0.4 0.25 0.15 1"/>
+      <geom name="branch_top_2" type="capsule" size="0.008 0.04664172" pos="-0.04282856 0 0.33799999" euler="0 -1.16362772 0"
+            rgba="0.4 0.25 0.15 1"/>
+      <geom name="branch_mid_1" type="capsule" size="0.008 0.054" pos="0 0.027 0.203" euler="-1.2217 0 0"
+            rgba="0.4 0.25 0.15 1"/>
+      <geom name="branch_mid_2" type="capsule" size="0.008 0.054" pos="0 -0.027 0.203" euler="1.2217 0 0"
+            rgba="0.4 0.25 0.15 1"/>
+      <geom name="branch_top_2_z_ext" type="capsule" size="0.008"
+            fromto="-0.08565712 0 0.35647063 -0.10065712 0 0.41047063"
+            rgba="0.4 0.25 0.15 1"/>
+    </body>
+  </worldbody>
+</mujoco>
